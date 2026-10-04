@@ -698,23 +698,114 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn group_kill_reaches_grandchildren() {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Foundation::{FILETIME, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+        };
+
+        const FIXTURE_DIR: &str = "HERDR_PROJECTS_RUNNER_TREE_FIXTURE_DIR";
+        const FIXTURE_LEAF: &str = "HERDR_PROJECTS_RUNNER_TREE_FIXTURE_LEAF";
+        const FIXTURE_ARGS: [&str; 4] = [
+            "--exact", "runner::tests::group_kill_reaches_grandchildren",
+            "--nocapture", "--test-threads=1",
+        ];
+
+        fn creation_time(handle: HANDLE) -> u64 {
+            let mut created = FILETIME::default();
+            let mut exited = FILETIME::default();
+            let mut kernel = FILETIME::default();
+            let mut user = FILETIME::default();
+            assert_ne!(unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) }, 0,
+                "could not identify fixture process: {}", std::io::Error::last_os_error());
+            (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)
+        }
+
+        // Reuse the already-loaded native test binary, not two cold PowerShells.
+        if let Some(dir) = std::env::var_os(FIXTURE_DIR) {
+            let dir = PathBuf::from(dir);
+            if std::env::var_os(FIXTURE_LEAF).is_some() {
+                let starting = dir.join("starting");
+                let identity = format!("{} {}", std::process::id(), creation_time(unsafe { GetCurrentProcess() }));
+                std::fs::write(&starting, identity).unwrap();
+                std::fs::rename(starting, dir.join("ready")).unwrap();
+                // Bound an orphan's lifetime even if the test itself panics.
+                std::thread::sleep(Duration::from_secs(20));
+            } else {
+                // Inherited output pipes make a surviving leaf block Runner's
+                // readers until the leaf exits.
+                Command::new(std::env::current_exe().unwrap())
+                    .args(FIXTURE_ARGS)
+                    .env(FIXTURE_LEAF, "1")
+                    .stdin(Stdio::null())
+                    .spawn().unwrap().wait().unwrap();
+            }
+            return;
+        }
+
+        struct Descendant(OwnedHandle);
+        impl Drop for Descendant {
+            fn drop(&mut self) {
+                let handle = self.0.as_raw_handle();
+                unsafe {
+                    if WaitForSingleObject(handle, 0) != WAIT_OBJECT_0 {
+                        // Cleanup only this retained process object, never a
+                        // name or a PID that Windows could have reused.
+                        if TerminateProcess(handle, 1) == 0 {
+                            eprintln!("fixture cleanup failed: {}", std::io::Error::last_os_error());
+                        } else if WaitForSingleObject(handle, 5000) != WAIT_OBJECT_0 {
+                            eprintln!("fixture cleanup did not finish within 5 seconds");
+                        }
+                    }
+                }
+            }
+        }
+
         let dir = tempfile::tempdir().unwrap();
-        let marker = dir.path().join("survived");
-        let leaf = format!("Start-Sleep -Seconds 6; [IO.File]::WriteAllText({}, 'alive')", crate::remote::quote_local(&marker.to_string_lossy()));
-        let script = format!(
-            "$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes({})); \
-             $child = Start-Process powershell.exe -NoNewWindow -PassThru \
-             -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded); \
-             [Console]::Out.WriteLine($child.Id); $child.WaitForExit()",
-            crate::remote::quote_local(&leaf)
-        );
+        let ready = dir.path().join("ready");
+        let cmd = Cmd::new(
+            std::env::current_exe().unwrap().to_str().unwrap(),
+            Duration::from_secs(3),
+        )
+            .args(FIXTURE_ARGS)
+            .env(FIXTURE_DIR, dir.path().to_str().unwrap())
+            .env_remove(FIXTURE_LEAF)
+            .own_group();
         let start = Instant::now();
-        let out = RealRunner.run(&powershell(&script, Duration::from_secs(3)).own_group()).unwrap();
-        assert!(out.timed_out);
-        assert!(out.stdout.trim().parse::<u32>().is_ok(), "descendant was not started: {}", out.stderr);
-        assert!(start.elapsed() < Duration::from_secs(8));
-        std::thread::sleep(Duration::from_millis(6300));
-        assert!(!marker.exists(), "grandchild outlived the tree kill");
+        let deadline = start + Duration::from_secs(8);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| { let _ = tx.send(RealRunner.run(&cmd)); });
+            while !ready.exists() {
+                if let Ok(out) = rx.try_recv() {
+                    panic!("native descendant was not ready before Runner returned: {out:?}");
+                }
+                assert!(Instant::now() < deadline, "native descendant readiness timed out");
+                std::thread::sleep(POLL);
+            }
+            let identity = std::fs::read_to_string(&ready).unwrap();
+            let (pid, created) = identity.split_once(' ').unwrap();
+            let pid = pid.parse::<u32>().unwrap();
+            let created = created.parse::<u64>().unwrap();
+            let handle = unsafe {
+                OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+            };
+            assert!(!handle.is_null(), "could not open descendant {pid}: {}", std::io::Error::last_os_error());
+            let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+            // Validate identity before allowing cleanup to terminate the handle.
+            assert_eq!(creation_time(handle.as_raw_handle()), created, "descendant PID {pid} was reused");
+            let descendant = Descendant(handle);
+            assert_eq!(unsafe { WaitForSingleObject(descendant.0.as_raw_handle(), 0) }, WAIT_TIMEOUT,
+                "descendant {pid} was not alive before the timeout");
+            let out = rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("Runner did not close descendant-held pipes within 8 seconds").unwrap();
+            assert!(out.timed_out);
+            assert!(!out.success());
+            assert!(start.elapsed() < Duration::from_secs(8));
+            assert_eq!(unsafe { WaitForSingleObject(descendant.0.as_raw_handle(), 0) }, WAIT_OBJECT_0,
+                "grandchild {pid} outlived the tree kill");
+        });
     }
 
     #[test]
