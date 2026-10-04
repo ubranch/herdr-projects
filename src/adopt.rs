@@ -194,15 +194,15 @@ mod tests {
         let t = adopt(&world.ctx(), "demo", "w5:p1", "Adopted work", Some("Finish the refactor.".into())).unwrap();
         assert_eq!((t.kind, t.status, t.prompt_pending), (Kind::Adopted, Status::Open, false));
         assert_eq!(t.agent_name, "my-agent");
-        assert_eq!(t.thread_dir, format!("{cwd}/.herdr-project/demo-t-0001"));
-        let brief = std::fs::read_to_string(format!("{}/brief.md", t.thread_dir)).unwrap();
+        assert_eq!(Path::new(&t.thread_dir), Path::new(&cwd).join(".herdr-project").join("demo-t-0001").as_path());
+        let brief = std::fs::read_to_string(Path::new(&t.thread_dir).join("brief.md")).unwrap();
         assert!(brief.contains("Finish the refactor."));
         assert_eq!(world.runner.count("agent prompt"), 1);
         assert_eq!(world.runner.count("agent start"), 0);
 
         // A second pane in the same directory gets its own thread directory.
         let second = adopt(&world.ctx(), "demo", "w5:p2", "Second", None).unwrap();
-        assert_eq!(second.thread_dir, format!("{cwd}/.herdr-project/demo-t-0002"));
+        assert_eq!(Path::new(&second.thread_dir), Path::new(&cwd).join(".herdr-project").join("demo-t-0002").as_path());
         assert!(second.agent_name.is_empty());
         assert_ne!(t.thread_dir, second.thread_dir);
         let _ = project;

@@ -6,9 +6,9 @@
 
 <p align="center"><a href="https://github.com/eliasstravik/herdr-projects/blob/main/assets/herdr-projects-launch.mp4"><img src="assets/herdr-projects-launch.webp" width="88%" alt="Animation: you tell a coordinator what you want, it starts three threads that each work on their own branch, and an overview groups them as ready for review, waiting on you, and working" /></a></p>
 
-<p align="center"><a href="https://github.com/eliasstravik/herdr-projects/blob/main/docs/getting-started.md"><img src="assets/buttons/open-your-first-project.svg" alt="Open your first project" /></a></p>
+<p align="center"><a href="docs/getting-started.md"><img src="assets/buttons/open-your-first-project.svg" alt="Open your first project" /></a></p>
 
-<p align="center"><sub>✓&nbsp;Free,&nbsp;MIT&nbsp;licensed &nbsp; ✓&nbsp;Runs&nbsp;on&nbsp;your&nbsp;machines,&nbsp;no&nbsp;hosted&nbsp;service &nbsp; ✓&nbsp;macOS&nbsp;and&nbsp;Linux,&nbsp;Herdr&nbsp;0.9.1+</sub></p>
+<p align="center"><sub>✓&nbsp;Free,&nbsp;MIT&nbsp;licensed &nbsp; ✓&nbsp;Runs&nbsp;on&nbsp;your&nbsp;machines,&nbsp;no&nbsp;hosted&nbsp;service &nbsp; ✓&nbsp;macOS,&nbsp;Linux&nbsp;and&nbsp;Windows&nbsp;x64,&nbsp;Herdr&nbsp;0.9.1+&nbsp;(Windows:&nbsp;0.9.3&nbsp;verified)</sub></p>
 
 <br />
 
@@ -50,26 +50,34 @@ Agents report their own progress, so a thread that asked you something shows `ne
 
 <table>
 <tr>
-<td align="center" valign="top" width="33%"><h3>1️⃣</h3><b>Install and configure</b><br /><sub>Run <code>herdr plugin install eliasstravik/herdr-projects</code>, then <code>herdr-projects configure</code> once for the sidebar rows, the popup key, the progress hooks and the <code>/autoproject</code> skill.</sub></td>
+<td align="center" valign="top" width="33%"><h3>1️⃣</h3><b>Install and configure</b><br /><sub>On macOS/Linux, run <code>herdr plugin install eliasstravik/herdr-projects</code>. On Windows, use the <a href="docs/getting-started.md#2-install-the-plugin">current-checkout source install</a>. Then run <code>herdr-projects configure</code> once for the sidebar rows, the popup key, the progress hooks and the <code>/autoproject</code> skill.</sub></td>
 <td align="center" valign="top" width="33%"><h3>2️⃣</h3><b>Create and open a project</b><br /><sub>Run <code>herdr plugin action invoke new --plugin herdr-projects</code>, or <code>herdr-projects new "Billing" --repo ~/dev/app</code> then <code>herdr-projects open billing</code>. A coordinator agent starts in the project's folder and primes itself from its <code>AGENTS.md</code>.</sub></td>
 <td align="center" valign="top" width="33%"><h3>3️⃣</h3><b>Tell it what you want</b><br /><sub>Describe the work in the coordinator's pane. It suggests threads, you say go ahead, and the sidebar shows each thread's state as it works.</sub></td>
 </tr>
 </table>
 
+Native Windows x64 currently needs PowerShell 7 and a Rust MSVC source build from this checkout. The [ubranch fork](https://github.com/ubranch/herdr-projects) has no published Windows release assets. Use the [Windows installation instructions](docs/getting-started.md#2-install-the-plugin), not the upstream install command.
+
 ## Get everything included, free
 
 <table align="center">
 <tr>
-<td align="center" valign="top"><sub>For developers who run coding agents in Herdr on macOS or Linux</sub><br /><h2>Free</h2><div align="left">&nbsp;&nbsp;&nbsp;✓&nbsp; A coordinator that delegates and never does the work itself<br />&nbsp;&nbsp;&nbsp;✓&nbsp; Threads on their own worktree and branch, or in a tab<br />&nbsp;&nbsp;&nbsp;✓&nbsp; Shared instructions and memory in every brief<br />&nbsp;&nbsp;&nbsp;✓&nbsp; What needs you, in the sidebar, the tab bar and one popup<br />&nbsp;&nbsp;&nbsp;✓&nbsp; Pull request follow-up, routines, cleanup after a merge<br />&nbsp;&nbsp;&nbsp;✓&nbsp; Threads on your saved SSH machines, reports copied home</div></td>
+<td align="center" valign="top"><sub>For developers who run coding agents in Herdr on macOS, Linux or Windows x64</sub><br /><h2>Free</h2><div align="left">&nbsp;&nbsp;&nbsp;✓&nbsp; A coordinator that delegates and never does the work itself<br />&nbsp;&nbsp;&nbsp;✓&nbsp; Threads on their own worktree and branch, or in a tab<br />&nbsp;&nbsp;&nbsp;✓&nbsp; Shared instructions and memory in every brief<br />&nbsp;&nbsp;&nbsp;✓&nbsp; What needs you, in the sidebar, the tab bar and one popup<br />&nbsp;&nbsp;&nbsp;✓&nbsp; Pull request follow-up, routines, cleanup after a merge<br />&nbsp;&nbsp;&nbsp;✓&nbsp; Threads on your saved SSH machines, reports copied home</div></td>
 </tr>
 <tr>
-<td align="center"><a href="https://github.com/eliasstravik/herdr-projects/blob/main/docs/getting-started.md"><img src="assets/buttons/open-your-first-project.svg" alt="Open your first project" /></a></td>
+<td align="center"><a href="docs/getting-started.md"><img src="assets/buttons/open-your-first-project.svg" alt="Open your first project" /></a></td>
 </tr>
 </table>
 
 ## Updating
 
-**Once, if you're on 0.2.2 or older** (`herdr-projects --version`), which has no `update` yet:
+**Windows fork policy:** preserve the port on `ubranch/herdr-projects`'s stable `main`, and merge upstream `main` only after Windows/Linux tests and real CLI smoke checks pass for the candidate. The **Upstream sync** workflow is configured for a best-effort 15-minute schedule and manual dispatch. Open branches and PRs are **track only**: no merging, testing or installing unmerged code, including upstream Windows PR #100. Merged PRs become ordinary upstream `main` updates. Conflicts or failing gates stop promotion, never force/reset the port. See [fork maintenance and activation](docs/operations.md#windows-fork-maintenance).
+
+Until the reviewed port is published to fork `main`, rebuild the current checkout with `scripts/install.ps1`. Afterwards, from a clean fork `main` checkout whose `origin` is `ubranch/herdr-projects`, run `git pull --ff-only origin main` and deliberately rebuild with `scripts/install.ps1`. Cloud sync does not install binaries or overwrite local development work; Windows release assets remain unpublished. Do not switch to upstream `main` to satisfy `update`. See [Updating](docs/getting-started.md#updating).
+
+Before upgrading an existing Unix installation to this port, stop its ticker with the old binary: ticker metadata now lives in `.ticker.info`, not `.ticker.lock`.
+
+**Once, on macOS/Linux if you're on 0.2.2 or older** (`herdr-projects --version`), which has no `update` yet:
 
 ```bash
 herdr-projects ticker stop
@@ -78,7 +86,7 @@ herdr-projects doctor --fix
 herdr-projects ticker start
 ```
 
-Herdr reinstalls the plugin in the same folder, and the plugin keeps your `~/.local/bin/herdr-projects` link pointing at it. If you linked a local checkout with `herdr plugin link` instead, run `git pull` and `sh scripts/install.sh` in it in place of the `herdr plugin install` line.
+Herdr reinstalls the plugin in the same folder, and the plugin keeps your `~/.local/bin/herdr-projects` link pointing at it. If you linked a local checkout with `herdr plugin link` instead, run `git pull --ff-only origin main` from a clean `main` checkout and `sh scripts/install.sh` in place of the `herdr plugin install` line.
 
 **From then on:**
 
@@ -93,7 +101,7 @@ herdr-projects update --check   # only print the installed and the newest versio
 
 ### Do I need to know how to code?
 
-You need to be comfortable in a terminal. The plugin downloads its own prebuilt binary on install, and a project is a plain folder of Markdown and TOML files, but you never have to edit them: everything changes by asking the coordinator or from the popup. You'll need macOS or Linux, Herdr 0.9.1 or newer, Git, and an agent CLI Herdr can start, such as Claude Code. Rust/Cargo is needed only when there is no prebuilt binary for your machine. The [getting-started guide](docs/getting-started.md) covers the prerequisites.
+You need to be comfortable in a terminal. A project is a plain folder of Markdown and TOML files, but you never have to edit them: everything changes by asking the coordinator or from the popup. You'll need Git and an agent CLI Herdr can start, such as Claude Code or oh-my-pi. macOS/Linux need Herdr 0.9.1 or newer and normally download a prebuilt binary. Native Windows x64 has been exercised with Herdr 0.9.3 and oh-my-pi 18.5.1; it currently needs PowerShell 7, Rust/Cargo 1.89+ with the MSVC toolchain, and Visual Studio C++ Build Tools. The [getting-started guide](docs/getting-started.md) covers installation; [Herdr notes](docs/herdr-notes.md#native-windows-port) distinguish exercised native scenarios from remaining acceptance checks.
 
 ### How do I check that Herdr Projects is running?
 
@@ -137,6 +145,6 @@ Herdr Projects is free and [MIT licensed](LICENSE). Your agent CLI's usual usage
 
 <p align="center">Your first project starts with an install, a name, and one sentence about what you want. Herdr Projects starts the threads and keeps them in view. You choose what to review and what to merge.</p>
 
-<p align="center"><a href="https://github.com/eliasstravik/herdr-projects/blob/main/docs/getting-started.md"><img src="assets/buttons/open-your-first-project.svg" alt="Open your first project" /></a></p>
+<p align="center"><a href="docs/getting-started.md"><img src="assets/buttons/open-your-first-project.svg" alt="Open your first project" /></a></p>
 
-<p align="center"><sub>✓&nbsp;Free,&nbsp;MIT&nbsp;licensed &nbsp; ✓&nbsp;Runs&nbsp;on&nbsp;your&nbsp;machines,&nbsp;no&nbsp;hosted&nbsp;service &nbsp; ✓&nbsp;macOS&nbsp;and&nbsp;Linux,&nbsp;Herdr&nbsp;0.9.1+</sub></p>
+<p align="center"><sub>✓&nbsp;Free,&nbsp;MIT&nbsp;licensed &nbsp; ✓&nbsp;Runs&nbsp;on&nbsp;your&nbsp;machines,&nbsp;no&nbsp;hosted&nbsp;service &nbsp; ✓&nbsp;macOS,&nbsp;Linux&nbsp;and&nbsp;Windows&nbsp;x64,&nbsp;Herdr&nbsp;0.9.1+&nbsp;(Windows:&nbsp;0.9.3&nbsp;verified)</sub></p>

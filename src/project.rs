@@ -93,6 +93,8 @@ pub fn home_label(name: &str, slug: &str) -> String {
 pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     let dir = path.parent().context("path has no parent")?;
     let name = path.file_name().context("path has no file name")?;
+    #[cfg(windows)]
+    let previous_agents = (name == "AGENTS.md").then(|| std::fs::read(path).ok()).flatten();
     let tmp = dir.join(format!(
         ".{}.{}.tmp",
         name.to_string_lossy(),
@@ -108,7 +110,45 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    result.with_context(|| format!("could not write {}", path.display()))
+    result.with_context(|| format!("could not write {}", path.display()))?;
+    #[cfg(windows)]
+    if name == "AGENTS.md" {
+        sync_claude(dir, contents, previous_agents.as_deref())?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn sync_claude(dir: &Path, contents: &[u8], previous_agents: Option<&[u8]>) -> Result<()> {
+    let claude = dir.join("CLAUDE.md");
+    if let Ok(meta) = std::fs::symlink_metadata(&claude) {
+        let owned_link = std::fs::read_link(&claude).is_ok_and(|target| target == Path::new("AGENTS.md"));
+        let owned_copy = meta.is_file() && std::fs::read(&claude).is_ok_and(|bytes| {
+            previous_agents == Some(bytes.as_slice()) || bytes.as_slice() == contents
+        });
+        if !owned_link && !owned_copy {
+            preserve_foreign_claude(&claude)?;
+        } else if meta.file_type().is_symlink() {
+            std::fs::remove_file(&claude)?;
+        }
+    }
+    write_atomic(&claude, contents)
+}
+
+#[cfg(any(unix, windows))]
+fn preserve_foreign_claude(claude: &Path) -> Result<()> {
+    let kept = claude.with_file_name("CLAUDE.md.before-herdr-projects");
+    match std::fs::symlink_metadata(&kept) {
+        Ok(_) => bail!(
+            "cannot replace foreign {}: {} already exists; both files were preserved",
+            claude.display(),
+            kept.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::rename(claude, &kept).with_context(|| format!("could not preserve {}", claude.display()))
+        }
+        Err(error) => Err(error).with_context(|| format!("could not inspect {}", kept.display())),
+    }
 }
 
 pub fn now() -> String {
@@ -306,9 +346,26 @@ pub struct Project {
 }
 
 /// Held while reading and rewriting anything under `threads/`, `inbox/` or
-/// `.state/`. Never held across a herdr, git, gh, ssh or scp call.
+/// `.state/`. Its persistent token is under the root, never inside a project
+/// folder that can move. Never held across a herdr, git, gh, ssh or scp call.
 pub struct ProjectLock {
     _file: File,
+}
+
+/// Reserves a slug even before its project exists. Tokens are never removed:
+/// deleting one would let an existing waiter and a new opener lock different
+/// files. Opening the token cannot recreate a missing root or project folder.
+fn lock_slug(root: &Path, slug: &str) -> Result<ProjectLock> {
+    validate_slug(slug)?;
+    let path = root.join(format!(".project-{slug}.lock"));
+    let file = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("could not lock project `{slug}` ({})", path.display()))?;
+    file.lock()?;
+    Ok(ProjectLock { _file: file })
 }
 
 impl Project {
@@ -340,25 +397,44 @@ impl Project {
     /// The canonical folder (symlinks resolved): the key of the project's
     /// `[safety]` table and of its routine approvals.
     pub fn canonical_dir(&self) -> PathBuf {
-        std::fs::canonicalize(self.dir()).unwrap_or_else(|_| self.dir())
+        crate::paths::canonicalize(&self.dir()).unwrap_or_else(|_| self.dir())
     }
 
-    /// Takes the per-project lock. The lock file is opened without creating
-    /// parent directories, and the project is re-checked afterwards, so a
-    /// `delete` that lands mid-operation cannot be resurrected by a writer.
+    /// Takes the per-project token outside the movable folder. The project
+    /// is re-checked afterwards, so a waiting writer cannot recreate a folder
+    /// that was deleted or renamed while it waited.
     pub fn lock(&self) -> Result<ProjectLock> {
-        let path = self.state_dir().join("lock");
-        let file = File::options()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)
-            .with_context(|| format!("project `{}` is gone ({})", self.slug, path.display()))?;
-        file.lock()?;
+        let lock = lock_slug(&self.root, &self.slug)?;
         if !self.project_md().is_file() {
             bail!("project `{}` is gone", self.slug);
         }
-        Ok(ProjectLock { _file: file })
+        Ok(lock)
+    }
+
+    /// Moves to an unused slug and records the old slug while both namespace
+    /// tokens are held. Lexical ordering also makes opposing renames safe.
+    pub(crate) fn rename_to(&self, slug: &str) -> Result<Project> {
+        validate_slug(slug)?;
+        if self.slug == slug {
+            bail!("`{slug}` already has that slug");
+        }
+        let (_first, _second) = if self.slug.as_str() < slug {
+            (lock_slug(&self.root, &self.slug)?, lock_slug(&self.root, slug)?)
+        } else {
+            (lock_slug(&self.root, slug)?, lock_slug(&self.root, &self.slug)?)
+        };
+        if !self.project_md().is_file() {
+            bail!("project `{}` is gone", self.slug);
+        }
+        let moved = Project { root: self.root.clone(), slug: slug.to_string() };
+        let target = moved.dir();
+        if std::fs::symlink_metadata(&target).is_ok() {
+            bail!("`{slug}` is taken: {} already exists", target.display());
+        }
+        std::fs::rename(self.dir(), &target)
+            .with_context(|| format!("could not move {} to {}", self.dir().display(), target.display()))?;
+        moved.record_former_slug(&self.slug)?;
+        Ok(moved)
     }
 
     pub fn read_project_md(&self) -> Result<(Settings, String)> {
@@ -387,9 +463,8 @@ impl Project {
             .former_slugs
     }
 
-    /// Records `slug` as a former slug (once).
-    pub fn add_former_slug(&self, slug: &str) -> Result<()> {
-        let _lock = self.lock()?;
+    /// Caller holds this project's token, including during a slug move.
+    fn record_former_slug(&self, slug: &str) -> Result<()> {
         let path = self.state_dir().join("project.json");
         let mut state = read_json::<ProjectState>(&path).unwrap_or_default();
         if !state.former_slugs.iter().any(|s| s == slug) {
@@ -591,8 +666,10 @@ pub fn write_default_routine(project: &Project) -> Result<bool> {
     Ok(true)
 }
 
-/// Writes `AGENTS.md`, `CLAUDE.md` (a relative symbolic link to it) and
-/// creates `uploads/`. Idempotent; used by `new` and by `doctor --fix`.
+/// Writes `AGENTS.md`, matching `CLAUDE.md` (a relative symlink on Unix,
+/// synchronized regular copy on Windows), and `uploads/`. Idempotent.
+/// A foreign `CLAUDE.md` is backed up once; if the backup exists, both files
+/// are preserved and the refresh returns a conflict error.
 pub fn write_priming(project: &Project, prefix: &str) -> Result<()> {
     let dir = project.dir();
     let (settings, _) = project.read_project_md()?;
@@ -608,19 +685,16 @@ pub fn write_priming(project: &Project, prefix: &str) -> Result<()> {
         }
     }
     write_atomic(&agents, agents_md(&name, &project.slug, prefix).as_bytes())?;
-    let claude = dir.join("CLAUDE.md");
-    let link_ok = std::fs::read_link(&claude).is_ok_and(|target| target == Path::new("AGENTS.md"));
-    if !link_ok {
-        if std::fs::symlink_metadata(&claude).is_ok() {
-            // A regular file or a link elsewhere: keep its text beside it, once.
-            let kept = dir.join("CLAUDE.md.before-herdr-projects");
-            if !kept.exists() {
-                std::fs::rename(&claude, &kept)?;
-            } else {
-                std::fs::remove_file(&claude)?;
+    #[cfg(unix)]
+    {
+        let claude = dir.join("CLAUDE.md");
+        let link_ok = std::fs::read_link(&claude).is_ok_and(|target| target == Path::new("AGENTS.md"));
+        if !link_ok {
+            if std::fs::symlink_metadata(&claude).is_ok() {
+                preserve_foreign_claude(&claude)?;
             }
+            std::os::unix::fs::symlink("AGENTS.md", &claude).with_context(|| format!("could not link {}", claude.display()))?;
         }
-        std::os::unix::fs::symlink("AGENTS.md", &claude).with_context(|| format!("could not link {}", claude.display()))?;
     }
     if !dir.join("uploads").is_dir() {
         std::fs::create_dir(dir.join("uploads"))?;
@@ -638,8 +712,8 @@ pub fn priming_problems(project: &Project, prefix: &str) -> Vec<String> {
         Ok(text) => match prefix_in_agents_md(&text) {
             None => problems.push("AGENTS.md does not name the binary".into()),
             Some(found) => {
-                let binary = found.split(" --root ").next().unwrap_or("").trim_matches('\'');
-                if !Path::new(binary).is_file() {
+                let binary = binary_in_prefix(&found).unwrap_or_default();
+                if !Path::new(&binary).is_file() {
                     problems.push(format!("AGENTS.md points at a binary that does not exist ({binary})"));
                 } else if found != prefix {
                     problems.push("AGENTS.md names another binary or root than this one".into());
@@ -647,8 +721,16 @@ pub fn priming_problems(project: &Project, prefix: &str) -> Vec<String> {
             }
         },
     }
-    if !std::fs::read_link(dir.join("CLAUDE.md")).is_ok_and(|t| t == Path::new("AGENTS.md")) {
+    #[cfg(unix)]
+    let claude_ok = std::fs::read_link(dir.join("CLAUDE.md")).is_ok_and(|target| target == Path::new("AGENTS.md"));
+    #[cfg(windows)]
+    let claude_ok = std::fs::symlink_metadata(dir.join("CLAUDE.md")).is_ok_and(|meta| meta.is_file())
+        && std::fs::read(dir.join("AGENTS.md")).ok().zip(std::fs::read(dir.join("CLAUDE.md")).ok()).is_some_and(|(agents, claude)| agents == claude);
+    if !claude_ok {
+        #[cfg(unix)]
         problems.push("CLAUDE.md is not a link to AGENTS.md".into());
+        #[cfg(windows)]
+        problems.push("CLAUDE.md is not synchronized with AGENTS.md".into());
     }
     if !dir.join("uploads").is_dir() {
         problems.push("uploads/ is missing".into());
@@ -657,6 +739,25 @@ pub fn priming_problems(project: &Project, prefix: &str) -> Vec<String> {
         problems.push("routines/pr-followup.md is missing".into());
     }
     problems
+}
+
+fn binary_in_prefix(prefix: &str) -> Option<String> {
+    let mut chars = prefix.strip_prefix("& ").unwrap_or(prefix).chars().peekable();
+    let mut binary = String::new();
+    let mut quoted = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' if quoted && cfg!(windows) && chars.peek() == Some(&'\'') => {
+                chars.next();
+                binary.push('\'');
+            }
+            '\'' => quoted = !quoted,
+            '\\' if !quoted && cfg!(unix) => binary.push(chars.next()?),
+            c if c.is_whitespace() && !quoted => break,
+            c => binary.push(c),
+        }
+    }
+    (!quoted && !binary.is_empty()).then_some(binary)
 }
 
 /// Creates the folder and skeleton files. The only code path that creates a
@@ -668,16 +769,13 @@ pub fn create(root: &Path, name: &str, goal: &str, repos: Vec<Repo>) -> Result<P
         slug: slug.clone(),
     };
     let dir = project.dir();
-    if dir.exists() {
-        bail!("`{slug}` already exists in {}", root.display());
-    }
     let repos = repos
         .into_iter()
         .map(|repo| match repo.machine {
             // A remote path is stored as it is on its own machine.
             Some(_) => repo,
             None => Repo {
-                path: std::fs::canonicalize(&repo.path)
+                path: crate::paths::canonicalize(Path::new(&repo.path))
                     .or_else(|_| std::path::absolute(&repo.path))
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or(repo.path),
@@ -694,6 +792,10 @@ pub fn create(root: &Path, name: &str, goal: &str, repos: Vec<Repo>) -> Result<P
     let front = toml::to_string(&settings)?;
 
     std::fs::create_dir_all(root)?;
+    let _lock = lock_slug(root, &slug)?;
+    if dir.exists() {
+        bail!("`{slug}` already exists in {}", root.display());
+    }
     std::fs::create_dir(&dir).with_context(|| format!("could not create {}", dir.display()))?;
     for sub in SUBDIRS {
         std::fs::create_dir_all(dir.join(sub))?;
@@ -805,7 +907,7 @@ mod tests {
             settings.repos,
             vec![
                 Repo { path: "/srv/app".into(), machine: Some("box".into()) },
-                Repo { path: "/no/such/repo".into(), machine: None },
+                Repo { path: std::path::absolute(Path::new("/no/such/repo")).unwrap().to_string_lossy().into_owned(), machine: None },
             ]
         );
         assert!(body.starts_with("# Instructions"));
@@ -817,7 +919,7 @@ mod tests {
     fn priming_files_are_written_linked_and_checked() {
         let root = tempfile::tempdir().unwrap();
         let project = create(root.path(), "Demo Project", "", vec![]).unwrap();
-        let prefix = format!("{} --root {}", std::env::current_exe().unwrap().display(), root.path().display());
+        let prefix = crate::coordinator::command_prefix(&std::env::current_exe().unwrap(), root.path());
         write_priming(&project, &prefix).unwrap();
         let text = std::fs::read_to_string(project.dir().join("AGENTS.md")).unwrap();
         assert!(text.contains("you are the coordinator of Demo Project"));
@@ -825,14 +927,17 @@ mod tests {
         assert!(text.contains(&format!("`{prefix} context demo-project`")));
         assert!(text.contains("under `threads/`, you are a thread"));
         assert_eq!(prefix_in_agents_md(&text).as_deref(), Some(prefix.as_str()));
+        #[cfg(unix)]
         assert_eq!(std::fs::read_link(project.dir().join("CLAUDE.md")).unwrap(), Path::new("AGENTS.md"));
+        #[cfg(windows)]
+        assert_eq!(std::fs::read(project.dir().join("CLAUDE.md")).unwrap(), text.as_bytes());
         assert!(project.dir().join("uploads").is_dir());
         assert!(priming_problems(&project, &prefix).is_empty());
 
         // Idempotent, and a stale binary path is reported.
         write_priming(&project, &prefix).unwrap();
         let stale = agents_md("Demo Project", "demo-project", "/no/such/binary --root /r");
-        std::fs::write(project.dir().join("AGENTS.md"), stale).unwrap();
+        write_atomic(&project.dir().join("AGENTS.md"), stale.as_bytes()).unwrap();
         let problems = priming_problems(&project, &prefix);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("does not exist"));
@@ -850,6 +955,86 @@ mod tests {
         write_priming(&project, &prefix).unwrap();
         assert_eq!(std::fs::read_to_string(project.dir().join("CLAUDE.md.before-herdr-projects")).unwrap(), "mine");
         assert!(priming_problems(&project, &prefix).is_empty());
+    }
+
+    #[test]
+    fn repeated_foreign_claude_edits_preserve_current_and_original_backup() {
+        let root = tempfile::tempdir().unwrap();
+        let project = create(root.path(), "Demo", "", vec![]).unwrap();
+        let prefix = crate::coordinator::command_prefix(&std::env::current_exe().unwrap(), root.path());
+        write_priming(&project, &prefix).unwrap();
+        let claude = project.dir().join("CLAUDE.md");
+        let kept = project.dir().join("CLAUDE.md.before-herdr-projects");
+        let original = b"# Original user instructions\n\xff";
+        std::fs::remove_file(&claude).unwrap();
+        std::fs::write(&claude, original).unwrap();
+        write_priming(&project, &prefix).unwrap();
+        assert_eq!(std::fs::read(&kept).unwrap(), original);
+        std::fs::remove_file(&claude).unwrap();
+
+        for newer in [b"# New user instructions\n".as_slice(), b"# Edited again\n\xfe".as_slice()] {
+            std::fs::write(&claude, newer).unwrap();
+            let error = write_priming(&project, &prefix).unwrap_err().to_string();
+            assert!(error.contains(&claude.display().to_string()), "{error}");
+            assert!(error.contains(&kept.display().to_string()), "{error}");
+            assert!(error.contains("both files were preserved"), "{error}");
+            assert_eq!(std::fs::read(&claude).unwrap(), newer);
+            assert_eq!(std::fs::read(&kept).unwrap(), original);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn every_atomic_agents_update_synchronizes_claude_and_keeps_user_files_once() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("项目's binary.exe");
+        std::fs::write(&binary, "").unwrap();
+        let project = create(root.path(), "Demo", "", vec![]).unwrap();
+        std::fs::write(project.dir().join("AGENTS.md"), "user agents").unwrap();
+        std::fs::write(project.dir().join("CLAUDE.md"), "user claude").unwrap();
+        let prefix = crate::coordinator::command_prefix(&binary, root.path());
+        write_priming(&project, &prefix).unwrap();
+        assert!(priming_problems(&project, &prefix).is_empty());
+        for name in ["Renamed project", "Updated again"] {
+            let contents = agents_md(name, &project.slug, &prefix);
+            write_atomic(&project.dir().join("AGENTS.md"), contents.as_bytes()).unwrap();
+            assert_eq!(std::fs::read(project.dir().join("CLAUDE.md")).unwrap(), contents.as_bytes());
+            assert!(!project.dir().join("CLAUDE.md").is_symlink());
+            assert!(priming_problems(&project, &prefix).is_empty());
+        }
+        let contents = std::fs::read(project.dir().join("AGENTS.md")).unwrap();
+        std::fs::remove_file(project.dir().join("AGENTS.md")).unwrap();
+        write_atomic(&project.dir().join("AGENTS.md"), &contents).unwrap();
+        assert_eq!(std::fs::read(project.dir().join("CLAUDE.md")).unwrap(), contents);
+        assert!(priming_problems(&project, &prefix).is_empty());
+        assert_eq!(std::fs::read_to_string(project.dir().join("AGENTS.md.before-herdr-projects")).unwrap(), "user agents");
+        assert_eq!(std::fs::read_to_string(project.dir().join("CLAUDE.md.before-herdr-projects")).unwrap(), "user claude");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn edited_generated_claude_with_header_preserves_current_and_backup() {
+        let root = tempfile::tempdir().unwrap();
+        let project = create(root.path(), "Demo", "", vec![]).unwrap();
+        let prefix = crate::coordinator::command_prefix(&std::env::current_exe().unwrap(), root.path());
+        let claude = project.dir().join("CLAUDE.md");
+        let kept = project.dir().join("CLAUDE.md.before-herdr-projects");
+        let original = b"# Original user instructions\n";
+        std::fs::write(&claude, original).unwrap();
+        write_priming(&project, &prefix).unwrap();
+        let mut edited = std::fs::read(&claude).unwrap();
+        edited.extend_from_slice(b"\n# Keep these user-added instructions\n");
+        std::fs::write(&claude, &edited).unwrap();
+
+        for name in ["Renamed project", "Updated again"] {
+            let contents = agents_md(name, &project.slug, &prefix);
+            let error = write_atomic(&project.dir().join("AGENTS.md"), contents.as_bytes()).unwrap_err().to_string();
+            assert!(error.contains(&claude.display().to_string()), "{error}");
+            assert!(error.contains(&kept.display().to_string()), "{error}");
+            assert!(error.contains("both files were preserved"), "{error}");
+            assert_eq!(std::fs::read(&claude).unwrap(), edited);
+            assert_eq!(std::fs::read(&kept).unwrap(), original);
+        }
     }
 
     #[test]
@@ -942,6 +1127,58 @@ mod tests {
         std::fs::remove_dir_all(project.dir()).unwrap();
         assert!(project.lock().is_err());
         assert!(!project.dir().exists());
+    }
+
+    #[test]
+    fn a_locked_folder_can_move_without_releasing_its_token() {
+        let root = tempfile::tempdir().unwrap();
+        let project = create(root.path(), "demo", "", vec![]).unwrap();
+        let held = project.lock().unwrap();
+        let token = root.path().join(".project-demo.lock");
+        let waiter = File::options().write(true).open(&token).unwrap();
+        assert!(matches!(waiter.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+
+        let target = root.path().join(".trash").join("demo");
+        std::fs::create_dir(target.parent().unwrap()).unwrap();
+        std::fs::rename(project.dir(), &target).unwrap();
+        assert!(token.is_file(), "the authoritative token stays outside the moved folder");
+        assert!(matches!(waiter.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+        held._file.unlock().unwrap();
+        drop(held);
+        waiter.lock().unwrap();
+        waiter.unlock().unwrap();
+        assert!(project.update_coordinator(|c| c.pane_id = "stale".into()).is_err());
+        assert!(!project.dir().exists());
+        assert!(target.join("PROJECT.md").is_file());
+    }
+
+    #[test]
+    fn renaming_preserves_state_and_switches_to_the_destination_token() {
+        let root = tempfile::tempdir().unwrap();
+        let project = create(root.path(), "earlier", "", vec![]).unwrap().rename_to("demo").unwrap();
+        project.set_status(Status::Paused).unwrap();
+        project.update_coordinator(|c| c.agent_session = "session".into()).unwrap();
+        let moved = project.rename_to("renamed").unwrap();
+        assert_eq!(moved.status(), Status::Paused);
+        assert_eq!(moved.former_slugs(), ["earlier", "demo"]);
+        assert_eq!(moved.coordinator().unwrap().agent_session, "session");
+        assert!(project.lock().is_err());
+        assert!(!project.dir().exists());
+
+        let held = moved.lock().unwrap();
+        let destination = File::options().write(true).open(root.path().join(".project-renamed.lock")).unwrap();
+        assert!(matches!(destination.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+        held._file.unlock().unwrap();
+        drop(held);
+        let recreated = create(root.path(), "demo", "", vec![]).unwrap();
+        let held = recreated.lock().unwrap();
+        let original = File::options().write(true).open(root.path().join(".project-demo.lock")).unwrap();
+        assert!(matches!(original.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+        held._file.unlock().unwrap();
+        drop(held);
+        assert!(moved.rename_to("demo").is_err(), "an existing destination is never overwritten");
+        assert!(moved.rename_to("renamed").is_err(), "a same-slug move must not lock itself twice");
+        assert_eq!(recreated.read_project_md().unwrap().0.name, "Demo");
     }
 
     #[test]

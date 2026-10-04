@@ -33,6 +33,10 @@ fn lock_path(root: &Path) -> PathBuf {
     root.join(".ticker.lock")
 }
 
+fn info_path(root: &Path) -> PathBuf {
+    root.join(".ticker.info")
+}
+
 fn stop_path(root: &Path) -> PathBuf {
     root.join(".ticker.stop")
 }
@@ -41,8 +45,8 @@ fn log_path(root: &Path) -> PathBuf {
     root.join(".ticker.log")
 }
 
-/// What the lock holder writes into the lock file, for `ticker status` and
-/// `doctor`. The pid is for display only; nothing signals it.
+/// Readable metadata is separate from the exclusively locked token: Windows
+/// mandatory file locks prevent other processes from reading the token.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
 pub struct Info {
@@ -63,17 +67,47 @@ pub enum LockState {
 
 /// Probes the lock without keeping it. The file is never created here.
 pub fn lock_state(root: &Path) -> LockState {
-    let Ok(mut file) = File::options().read(true).write(true).open(lock_path(root)) else {
+    let Ok(file) = File::options().read(true).write(true).open(lock_path(root)) else {
         return LockState::Free;
     };
     match file.try_lock() {
         Ok(()) => LockState::Free,
         Err(_) => {
-            let mut text = String::new();
-            let _ = file.read_to_string(&mut text);
-            LockState::Held(serde_json::from_str(&text).unwrap_or_default())
+            let info: Info = std::fs::read_to_string(info_path(root))
+                .ok()
+                .and_then(|text| serde_json::from_str(&text).ok())
+                .unwrap_or_default();
+            // The next owner may have acquired the token but not yet cleared
+            // or published metadata. A dead previous PID is not that owner.
+            LockState::Held(if info.pid != 0 && !process_alive(info.pid) { Info::default() } else { info })
         }
     }
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: signal zero probes existence without signaling the process.
+    unsafe { kill(pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() != Some(3) }
+}
+
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::{ERROR_INVALID_PARAMETER, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        // Access denied is not evidence of a dead process.
+        return std::io::Error::last_os_error().raw_os_error() != Some(ERROR_INVALID_PARAMETER as i32);
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+    unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) != WAIT_OBJECT_0 }
 }
 
 #[derive(Debug, PartialEq)]
@@ -83,13 +117,12 @@ pub enum StartAction {
     StopThenSpawn,
 }
 
-/// The `ticker start` decision. A healthy ticker of the same version is never
-/// replaced; a different version, or a stop in progress, is stopped first so
-/// `open` never ends with no ticker.
+/// A live ticker or an initializing lock holder is left alone. A confirmed
+/// different version, or a stop in progress, is stopped before spawning.
 pub fn decide_start(lock: &LockState, my_version: &str, stop_file_exists: bool) -> StartAction {
     match lock {
         LockState::Free => StartAction::Spawn,
-        LockState::Held(info) if info.version == my_version && !stop_file_exists => StartAction::Nothing,
+        LockState::Held(info) if (info.version == my_version || info.version.is_empty()) && !stop_file_exists => StartAction::Nothing,
         LockState::Held(_) => StartAction::StopThenSpawn,
     }
 }
@@ -117,6 +150,7 @@ pub fn start(ctx: &Ctx) -> Result<()> {
     }
 }
 
+#[cfg(unix)]
 unsafe extern "C" {
     fn setsid() -> i32;
 }
@@ -124,6 +158,7 @@ unsafe extern "C" {
 /// `ticker run`, detached: null stdio and a new session, so it does not die
 /// with the process group of whatever started it (an agent's shell tool).
 fn spawn(root: &Path) -> Result<()> {
+    #[cfg(unix)]
     use std::os::unix::process::CommandExt;
     let binary = crate::paths::binary()?;
     let mut command = Command::new(binary);
@@ -139,12 +174,19 @@ fn spawn(root: &Path) -> Result<()> {
     for key in ["HERDR_SOCKET_PATH", "HERDR_SESSION", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"] {
         command.env_remove(key);
     }
+    #[cfg(unix)]
     // SAFETY: setsid is async-signal-safe and touches no memory.
     unsafe {
         command.pre_exec(|| {
             setsid();
             Ok(())
         });
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     }
     command.spawn().context("could not start the ticker")?;
     Ok(())
@@ -189,17 +231,6 @@ pub fn status(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Where a tool resolves from this process's own `PATH`.
-fn which(tool: &str, path_var: &str) -> String {
-    if tool.contains('/') {
-        return tool.to_string();
-    }
-    std::env::split_paths(path_var)
-        .map(|dir| dir.join(tool))
-        .find(|candidate| candidate.is_file())
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "(not found)".to_string())
-}
 
 pub struct Log {
     path: PathBuf,
@@ -231,7 +262,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     if project::list_slugs(root).is_empty() {
         return Ok(());
     }
-    let mut lock = File::options()
+    let lock = File::options()
         .create(true)
         .truncate(false)
         .read(true)
@@ -240,7 +271,13 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     if lock.try_lock().is_err() {
         return Ok(());
     }
-    let path_var = ctx.env.var("PATH").unwrap_or("").to_string();
+    // Only the authoritative lock holder can clear stale metadata or publish
+    // the new lifetime. During initialization readers see Held(default).
+    match std::fs::remove_file(info_path(root)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     let info = Info {
         version: crate::VERSION.to_string(),
         pid: std::process::id(),
@@ -250,13 +287,14 @@ pub fn run(ctx: &Ctx) -> Result<()> {
             .iter()
             .map(|tool| {
                 let name = if *tool == "herdr" { ctx.env.herdr_bin() } else { tool.to_string() };
-                (tool.to_string(), which(&name, &path_var))
+                let path = crate::profiles::find_executable(ctx.env, &name)
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "(not found)".to_string());
+                (tool.to_string(), path)
             })
             .collect(),
     };
-    lock.set_len(0)?;
-    lock.write_all(serde_json::to_string_pretty(&info)?.as_bytes())?;
-    lock.flush()?;
+    project::write_json(&info_path(root), &info)?;
 
     let log = Log { path: log_path(root) };
     log.line(&format!("ticker {} started (pid {})", info.version, info.pid));
@@ -956,7 +994,7 @@ fn tick_slow(ctx: &Ctx, project: &Project, seen: &Seen, memory: &mut Memory) -> 
         if let Some(hash) = thread::local_report_hash(t)
             && hash != t.report_hash
         {
-            let copied = thread::copy_home_local(project, t, true, ctx.runner);
+            let copied = thread::copy_home_local(project, t, true);
             match copied.outcome {
                 thread::CopyOutcome::Failed(error) => errors.push(anyhow::anyhow!("{}: copy failed: {error}", t.id)),
                 outcome => {
@@ -1034,6 +1072,8 @@ mod tests {
         assert_eq!(decide_start(&held("v0"), "v1", false), StartAction::StopThenSpawn);
         // A stop in progress: finish it, then spawn.
         assert_eq!(decide_start(&held("v1"), "v1", true), StartAction::StopThenSpawn);
+        assert_eq!(decide_start(&held(""), "v1", false), StartAction::Nothing);
+        assert_eq!(decide_start(&held(""), "v1", true), StartAction::StopThenSpawn);
     }
 
     #[test]
@@ -1058,13 +1098,21 @@ mod tests {
     fn lock_probe_sees_a_holder_and_its_version() {
         let root = tempfile::tempdir().unwrap();
         assert_eq!(lock_state(root.path()), LockState::Free);
-        let mut file = File::options().create(true).write(true).truncate(false).open(lock_path(root.path())).unwrap();
+        let file = File::options().create(true).write(true).truncate(false).open(lock_path(root.path())).unwrap();
         file.lock().unwrap();
-        file.write_all(br#"{"version":"v9","pid":1}"#).unwrap();
+        let info = Info {
+            version: "v9".into(),
+            pid: std::process::id(),
+            root: root.path().display().to_string(),
+            started: project::now(),
+            tools: vec![("herdr".into(), "herdr".into())],
+        };
+        project::write_json(&info_path(root.path()), &info).unwrap();
         match lock_state(root.path()) {
-            LockState::Held(info) => assert_eq!(info.version, "v9"),
+            LockState::Held(read) => assert_eq!(read, info),
             LockState::Free => panic!("lock should be held"),
         }
+        assert_eq!(file.metadata().unwrap().len(), 0, "the locked token must not contain metadata");
         drop(file);
         // Another test may fork a child at this instant; until that child execs,
         // it shares the locked descriptor. Real callers poll too (`ticker stop`).
@@ -1073,6 +1121,51 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(lock_state(root.path()), LockState::Free);
+    }
+
+    #[test]
+    fn initialization_ignores_missing_or_dead_previous_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let file = File::options().create(true).write(true).truncate(false).open(lock_path(root.path())).unwrap();
+        file.lock().unwrap();
+        assert_eq!(decide_start(&lock_state(root.path()), "new", false), StartAction::Nothing);
+        project::write_json(&info_path(root.path()), &Info {
+            version: "old".into(),
+            pid: u32::MAX,
+            ..Info::default()
+        }).unwrap();
+        assert_eq!(decide_start(&lock_state(root.path()), "new", false), StartAction::Nothing);
+        project::write_json(&info_path(root.path()), &Info {
+            version: "new".into(),
+            pid: std::process::id(),
+            started: project::now(),
+            ..Info::default()
+        }).unwrap();
+        for _ in 0..3 {
+            assert_eq!(decide_start(&lock_state(root.path()), "new", false), StartAction::Nothing);
+        }
+        assert_eq!(decide_start(&lock_state(root.path()), "new", true), StartAction::StopThenSpawn);
+    }
+
+    #[test]
+    fn stop_waits_for_holder_then_clears_the_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let file = File::options().create(true).write(true).truncate(false).open(lock_path(root.path())).unwrap();
+        file.lock().unwrap();
+        let path = root.path().to_path_buf();
+        let holder = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !stop_path(&path).exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let stopped = stop_path(&path).exists();
+            drop(file);
+            assert!(stopped, "stop did not request the running holder to exit");
+        });
+        stop(root.path()).unwrap();
+        holder.join().unwrap();
+        assert_eq!(lock_state(root.path()), LockState::Free);
+        assert!(!stop_path(root.path()).exists());
     }
 
     #[test]
@@ -1100,7 +1193,7 @@ mod tests {
         let project = project::create(&root, "demo", "", vec![]).unwrap();
         let socket = home.path().join("herdr.sock");
         std::fs::write(&socket, b"").unwrap();
-        let cwd = project.dir().to_string_lossy().into_owned();
+        let cwd = project.canonical_dir().to_string_lossy().into_owned();
         project
             .update_coordinator(|c| {
                 c.socket = socket.to_string_lossy().into_owned();
@@ -1117,7 +1210,10 @@ mod tests {
     }
 
     fn with_cwd(json: &str, fixture: &Fixture) -> String {
-        json.replace("CWD", &fixture.project.dir().to_string_lossy())
+        json.replace(
+            "\"CWD\"",
+            &serde_json::to_string(&fixture.project.canonical_dir().to_string_lossy()).unwrap(),
+        )
     }
 
     #[test]

@@ -229,10 +229,11 @@ impl Agent {
         ready_state(&self.agent_status)
     }
 
-    /// True when the agent works in `dir`: its shell's directory, or its own
-    /// when it runs as a child of `open` in a shell elsewhere.
+    /// True when the local agent works in `dir`: its shell's directory, or its
+    /// own when it runs as a child of `open` in a shell elsewhere.
     pub fn works_in(&self, dir: &str) -> bool {
-        !dir.is_empty() && (self.cwd == dir || self.foreground_cwd == dir)
+        crate::paths::same_dir(Path::new(&self.cwd), Path::new(dir))
+            || crate::paths::same_dir(Path::new(&self.foreground_cwd), Path::new(dir))
     }
 
     pub fn session_id(&self) -> &str {

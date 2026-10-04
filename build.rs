@@ -4,6 +4,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // No rerun-if-changed lines on purpose: cargo then reruns this script whenever
 // any file in the package changes, so a rebuilt binary always gets a new build id.
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        // Debug Clap command builders need over 1 MiB of live stack before parsing.
+        // Reserve 2 MiB for this binary only; Windows commits pages as needed.
+        println!("cargo:rustc-link-arg-bin=herdr-projects=/STACK:2097152");
+    }
+
     let hash = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()

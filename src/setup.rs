@@ -11,7 +11,11 @@ use jsonc_parser::cst::{CstInputValue, CstRootNode};
 use serde::{Deserialize, Serialize};
 
 use crate::paths::{Ctx, Env};
-use crate::remote::quote;
+use crate::remote::quote_local;
+#[cfg(windows)]
+use crate::remote::local_command;
+#[cfg(windows)]
+use base64::Engine as _;
 
 /// A harness with a native, user-level hook system that can put text in the
 /// model's context. Every other agent learns to report from its thread brief
@@ -58,7 +62,11 @@ pub fn harness(agent: &str) -> Option<&'static Harness> {
 
 /// The harness a hook command was written for (`… hook --agent <name> …`).
 fn harness_of(command: &str) -> &'static Harness {
-    let agent = command.split(" hook --agent ").nth(1).and_then(|rest| rest.split_whitespace().next()).unwrap_or("claude");
+    #[cfg(windows)]
+    let decoded = powershell_script(command);
+    #[cfg(windows)]
+    let command = decoded.as_deref().unwrap_or(command);
+    let agent = command.rsplit_once(" hook --agent ").and_then(|(_, rest)| rest.split_whitespace().next()).unwrap_or("claude");
     harness(agent).unwrap_or(&HARNESSES[0])
 }
 
@@ -141,19 +149,54 @@ fn remove_ours(kind: &str, text: &str, command: Option<&str>) -> Result<String> 
     }
 }
 
-/// Herdr's config file: `HERDR_CONFIG_PATH`, else `$XDG_CONFIG_HOME/herdr`,
-/// else `~/.config/herdr/config.toml`.
+/// Herdr's config file: `HERDR_CONFIG_PATH`, else the platform Herdr config
+/// directory (`%APPDATA%\herdr` on Windows).
 pub fn herdr_config_path(env: &Env) -> PathBuf {
     if let Some(path) = env.var("HERDR_CONFIG_PATH") {
         return PathBuf::from(path);
     }
-    env.var("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| env.home.join(".config")).join("herdr/config.toml")
+    env.herdr_config_dir().join("config.toml")
 }
 
-/// The tab-bar command: absolute paths, since it runs under `/bin/sh -lc` on
-/// the server with no plugin environment.
+/// The tab-bar command uses absolute paths and has no plugin environment.
+/// Herdr's Windows tab-bar runner uses cmd.exe, not the interactive pane shell.
 pub fn tab_command(binary: &Path, root: &Path) -> String {
-    format!("{} --root {} needs-you --line", quote(&binary.to_string_lossy()), quote(&root.to_string_lossy()))
+    let command = format!("{} needs-you --line", crate::coordinator::command_prefix(binary, root));
+    #[cfg(windows)]
+    { powershell_command(&command) }
+    #[cfg(not(windows))]
+    { command }
+}
+
+#[cfg(windows)]
+const POWERSHELL_PREFIX: &str = "pwsh.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ";
+
+/// Base64 UTF-16LE avoids both cmd.exe expansion (including `%`) and another
+/// PowerShell quoting layer. Hooks and the tab bar are not interactive shells.
+#[cfg(windows)]
+fn powershell_command(script: &str) -> String {
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    format!("{POWERSHELL_PREFIX}{}", base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+#[cfg(windows)]
+fn powershell_script(command: &str) -> Option<String> {
+    let bytes = base64::engine::general_purpose::STANDARD.decode(command.strip_prefix(POWERSHELL_PREFIX)?).ok()?;
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    let units: Vec<u16> = bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+    String::from_utf16(&units).ok()
+}
+
+/// Identifies our tab-bar entry even when a Windows host needs an encoded
+/// PowerShell wrapper. Used when replacing or removing a previous install.
+pub fn is_tab_command(command: &str) -> bool {
+    #[cfg(windows)]
+    let decoded = powershell_script(command);
+    #[cfg(windows)]
+    let command = decoded.as_deref().unwrap_or(command);
+    command.contains("needs-you --line")
 }
 
 fn hook_entry(harness: &Harness, command: &str) -> serde_json::Value {
@@ -175,15 +218,20 @@ fn cst_value(value: &serde_json::Value) -> CstInputValue {
     }
 }
 
-/// Whether a hook entry is one of ours: it runs `herdr-projects … hook`.
+/// Whether a command hook is one of ours: it runs `herdr-projects … hook`.
 fn is_our_entry(value: &serde_json::Value) -> bool {
-    let ours = |h: &serde_json::Value| h["command"].as_str().is_some_and(|c| c.contains("herdr-projects") && c.contains(" hook --agent "));
-    ours(value) || value["hooks"].as_array().is_some_and(|hooks| hooks.iter().any(ours))
+    value["command"].as_str().is_some_and(|command| {
+        #[cfg(windows)]
+        let decoded = powershell_script(command);
+        #[cfg(windows)]
+        let command = decoded.as_deref().unwrap_or(command);
+        command.contains("herdr-projects") && command.contains(" hook --agent ")
+    })
 }
 
 /// Adds (or removes) the plugin's hook entry under each event, keeping
-/// everything else, including comments. Any earlier entry of ours (a moved
-/// binary) is replaced on add. Idempotent.
+/// everything else, including comments and foreign commands in mixed matcher
+/// groups. Any earlier entry of ours (a moved binary) is replaced on add. Idempotent.
 pub fn hooks(input: &str, command: &str, remove: bool) -> Result<String> {
     let harness = harness_of(command);
     let root = CstRootNode::parse(input, &Default::default()).context("hook file does not parse")?;
@@ -207,7 +255,7 @@ pub fn hooks(input: &str, command: &str, remove: bool) -> Result<String> {
         for entry in entries.elements() {
             let value = entry.to_serde_value();
             if value.as_ref() == Some(&expected) {
-                if remove {
+                if remove || found {
                     entry.remove();
                 } else {
                     found = true;
@@ -215,6 +263,20 @@ pub fn hooks(input: &str, command: &str, remove: bool) -> Result<String> {
             } else if value.as_ref().is_some_and(is_our_entry) {
                 // Ours, but with another command (the binary moved): replaced.
                 entry.remove();
+            } else if let (Some(nested), Some(values)) = (
+                entry.as_object().and_then(|group| group.array_value("hooks")),
+                value.as_ref().and_then(|group| group["hooks"].as_array()),
+            ) {
+                let mut remaining = values.len();
+                for (hook, value) in nested.elements().into_iter().zip(values) {
+                    if is_our_entry(value) {
+                        hook.remove();
+                        remaining -= 1;
+                    }
+                }
+                if remaining == 0 && !values.is_empty() {
+                    entry.remove();
+                }
             }
         }
         if !remove && !found {
@@ -230,7 +292,11 @@ pub fn hooks(input: &str, command: &str, remove: bool) -> Result<String> {
 /// failing UserPromptSubmit hook (exit 2) as "block this prompt", in every
 /// session on the machine, so a missing or older binary must not do that.
 pub fn hook_command(binary: &Path, root: &Path, agent: &str) -> String {
-    format!("{} --root {} hook --agent {agent} 2>/dev/null || true", quote(&binary.to_string_lossy()), quote(&root.to_string_lossy()))
+    let command = format!("{} hook --agent {}", crate::coordinator::command_prefix(binary, root), quote_local(agent));
+    #[cfg(windows)]
+    { powershell_command(&format!("try {{ {command} 2>$null }} catch {{}}; exit 0")) }
+    #[cfg(not(windows))]
+    { format!("{command} 2>/dev/null || true") }
 }
 
 /// Where each harness keeps its hooks; `--claude-home`/`--codex-home`
@@ -279,7 +345,7 @@ pub fn skill_link(env: &Env, agent: &str, claude_home: Option<&Path>) -> PathBuf
             .join("skills"),
         _ => env.home.join(".agents/skills"),
     };
-    let resolved = std::fs::canonicalize(&dir).or_else(|_| std::fs::canonicalize(dir.parent().unwrap_or(&dir)).map(|p| p.join("skills")));
+    let resolved = crate::paths::canonicalize(&dir).or_else(|_| crate::paths::canonicalize(dir.parent().unwrap_or(&dir)).map(|p| p.join("skills")));
     resolved.unwrap_or(dir).join(SKILL)
 }
 
@@ -302,10 +368,32 @@ pub fn skill_state(link: &Path, source: &Path) -> SkillState {
         return SkillState::Foreign;
     }
     match std::fs::read_link(link) {
-        Ok(target) if target == source => SkillState::Ours,
+        Ok(target) if target == source || crate::paths::canonicalize(&target).ok().zip(crate::paths::canonicalize(source).ok()).is_some_and(|(a, b)| a == b) => SkillState::Ours,
         Ok(target) => SkillState::Elsewhere(target),
         Err(_) => SkillState::Foreign,
     }
+}
+
+fn remove_skill_link(link: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    { std::fs::remove_dir(link) }
+    #[cfg(not(windows))]
+    { std::fs::remove_file(link) }
+}
+
+/// Junctions need neither elevation nor Developer Mode and follow plugin
+/// updates, unlike copying a skill directory. Removal deletes only the link.
+fn create_skill_link(source: &Path, link: &Path, _runner: &dyn crate::runner::Runner) -> Result<()> {
+    #[cfg(windows)]
+    {
+        let source = crate::paths::canonicalize(source)?;
+        let script = local_command("New-Item", &["-ItemType", "Junction", "-Path", &link.to_string_lossy(), "-Target", &source.to_string_lossy(), "-ErrorAction", "Stop"]);
+        let out = _runner.run(&crate::runner::Cmd::new("pwsh.exe", std::time::Duration::from_secs(10)).args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &format!("{script} | Out-Null")]))?;
+        ensure!(out.success(), "could not link {}: {}", link.display(), out.error_text());
+    }
+    #[cfg(not(windows))]
+    std::os::unix::fs::symlink(source, link)?;
+    Ok(())
 }
 
 pub struct ConfigureOptions {
@@ -460,10 +548,10 @@ pub fn configure(ctx: &Ctx, options: &ConfigureOptions) -> Result<Vec<String>> {
     for (link, source) in &links {
         let Some(source) = source else { continue };
         if std::fs::symlink_metadata(link).is_ok() {
-            std::fs::remove_file(link)?;
+            remove_skill_link(link)?;
         }
         std::fs::create_dir_all(link.parent().context("skill link has no parent")?)?;
-        std::os::unix::fs::symlink(source, link).with_context(|| format!("could not link {}", link.display()))?;
+        create_skill_link(source, link, ctx.runner).with_context(|| format!("could not link {}", link.display()))?;
     }
     Ok(notes)
 }
@@ -479,7 +567,7 @@ pub fn unconfigure(ctx: &Ctx) -> Result<Vec<String>> {
         if owned.kind == "skill" {
             match skill_state(path, Path::new(&owned.after)) {
                 SkillState::Ours => {
-                    std::fs::remove_file(path)?;
+                    remove_skill_link(path)?;
                     notes.push(format!("{key}: skill link removed"));
                 }
                 SkillState::Missing => notes.push(format!("{key}: already gone")),
@@ -560,9 +648,60 @@ mod tests {
     #[test]
     fn the_hook_command_never_fails_even_with_a_missing_binary() {
         let command = hook_command(Path::new("/no/such/herdr-projects"), Path::new("/r"), "claude");
-        let out = std::process::Command::new("/bin/sh").args(["-c", &command]).output().unwrap();
-        assert!(out.status.success());
-        assert!(out.stdout.is_empty() && out.stderr.is_empty());
+        #[cfg(windows)]
+        let out = std::process::Command::new(crate::paths::windows_cmd()).args(["/d", "/c", &command]).output().unwrap();
+        #[cfg(not(windows))]
+        let out = std::process::Command::new("sh").args(["-c", &command]).output().unwrap();
+        assert!(out.status.success(), "status: {}; stdout: {}; stderr: {}", out.status, String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(out.stdout.is_empty() && out.stderr.is_empty(), "stdout: {}; stderr: {}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    }
+
+    #[test]
+    fn generated_hook_and_tab_commands_execute_in_the_host_shell() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("it's a %HP_UNKNOWN% $(root) hook --agent droid \u{03bb}");
+        std::fs::create_dir(&root).unwrap();
+        let binary = temp.path().join(if cfg!(windows) { "it's %HP_UNKNOWN% herdr-projects.ps1" } else { "it's %HP_UNKNOWN% herdr-projects.sh" });
+        if cfg!(windows) {
+            std::fs::write(&binary, "$ErrorActionPreference = 'Stop'\nif ($args[0] -ne '--root') { exit 3 }\nif ($args[2] -eq 'hook') {\n  [IO.File]::WriteAllText([IO.Path]::Combine($args[1], 'hook.txt'), $args[4])\n  [Console]::Out.Write('{\"ok\":true}')\n} elseif ($args[2] -eq 'needs-you') {\n  [IO.File]::WriteAllText([IO.Path]::Combine($args[1], 'tab.txt'), 'ran')\n  [Console]::Out.Write('projects: 1 need you')\n} else { exit 4 }\n").unwrap();
+        } else {
+            std::fs::write(&binary, "#!/bin/sh\nset -e\ntest \"$1\" = --root\ncase \"$3\" in\nhook) printf %s \"$5\" > \"$2/hook.txt\"; printf '%s' '{\"ok\":true}' ;;\nneeds-you) printf ran > \"$2/tab.txt\"; printf '%s' 'projects: 1 need you' ;;\n*) exit 4 ;;\nesac\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+        }
+        let run = |command: &str| {
+            #[cfg(windows)]
+            { std::process::Command::new(crate::paths::windows_cmd()).args(["/d", "/c", command]).env("PSExecutionPolicyPreference", "Bypass").output().unwrap() }
+            #[cfg(not(windows))]
+            { std::process::Command::new("sh").args(["-c", command]).output().unwrap() }
+        };
+        for agent in ["claude", "copilot", "gemini"] {
+            let command = hook_command(&binary, &root, agent);
+            let out = run(&command);
+            assert!(out.status.success(), "status: {}; stdout: {}; stderr: {}", out.status, String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            assert!(out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(out.stdout, b"{\"ok\":true}");
+            assert_eq!(std::fs::read_to_string(root.join("hook.txt")).unwrap(), agent);
+            let configured = hooks("{}", &command, false).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&configured).unwrap();
+            for event in harness(agent).unwrap().events {
+                let entry = &value["hooks"][event][0];
+                assert_eq!(if agent == "copilot" { &entry["command"] } else { &entry["hooks"][0]["command"] }, &serde_json::Value::String(command.clone()));
+            }
+            let moved = hook_command(&temp.path().join("moved/herdr-projects"), &root, agent);
+            let replaced = hooks(&configured, &moved, false).unwrap();
+            let removed = hooks(&replaced, &moved, true).unwrap();
+            assert!(!removed.contains(&moved));
+        }
+        let command = tab_command(&binary, &root);
+        assert!(is_tab_command(&command));
+        let out = run(&command);
+        assert!(out.status.success(), "status: {}; stdout: {}; stderr: {}", out.status, String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert_eq!(out.stdout, b"projects: 1 need you");
+        assert_eq!(std::fs::read_to_string(root.join("tab.txt")).unwrap(), "ran");
     }
 
     #[test]
@@ -658,9 +797,11 @@ mod tests {
         configure(&ctx, &options).unwrap();
         let configured = std::fs::read_to_string(claude.join("settings.json")).unwrap();
         assert!(configured.contains("// mine") && configured.contains("say done"));
-        assert_eq!(configured.matches("hook --agent claude").count(), 3);
+        let configured_json = CstRootNode::parse(&configured, &Default::default()).unwrap().to_serde_value().unwrap();
+        assert_eq!(configured_json["hooks"]["SessionStart"][0]["hooks"][0]["command"], hook_command(&crate::paths::binary().unwrap(), &ctx.root, "claude"));
         let codex_text = std::fs::read_to_string(codex.join("hooks.json")).unwrap();
-        assert_eq!(codex_text.matches("hook --agent codex").count(), 3);
+        let codex_json: serde_json::Value = serde_json::from_str(&codex_text).unwrap();
+        assert_eq!(codex_json["hooks"]["SessionStart"][0]["hooks"][0]["command"], hook_command(&crate::paths::binary().unwrap(), &ctx.root, "codex"));
         assert_eq!(load_journal(&ctx.config_dir).len(), 2);
         // Idempotent.
         configure(&ctx, &options).unwrap();
@@ -682,6 +823,130 @@ mod tests {
     }
 
     #[test]
+    fn configure_refresh_and_unconfigure_preserve_mixed_hook_groups() {
+        for agent in ["claude", "codex", "droid", "gemini"] {
+            let home = tempfile::tempdir().unwrap();
+            let env = Env::for_test(home.path(), &[]);
+            let runner = crate::runner::fake::FakeRunner::new();
+            let ctx = Ctx { env: &env, root: home.path().join("root"), config_dir: home.path().join("cfg"), runner: &runner, detached_ticker: false };
+            let options = ConfigureOptions { clients: vec![agent.into()], claude_home: None, codex_home: None, dry_run: false, hooks: true, sidebar: false, key: None, herdr_config: None, skill: None };
+            configure(&ctx, &options).unwrap();
+            let file = hook_file(&env, agent, None, None);
+            let events = harness(agent).unwrap().events;
+            let native_hook = serde_json::json!({"type":"command","command":hook_command(&home.path().join("herdr-projects"), &ctx.root, agent),"timeout":harness(agent).unwrap().timeout});
+            let plain_hook = serde_json::json!({"type":"command","command":format!("/old/herdr-projects --root /r hook --agent {agent}"),"timeout":10});
+            let foreign_before = serde_json::json!({"type":"command","command":"notify-before","timeout":42,"userField":true});
+            let foreign_after = serde_json::json!({"type":"command","command":"notify-after","timeout":17});
+            let event_groups = events.map(|event| format!(
+                r#""{event}": [
+                    {{
+                        // user's matcher
+                        "matcher": "Edit",
+                        "userField": {{"keep": true}},
+                        "hooks": [
+                            {foreign_before}, // user's first command
+                            {native_hook},
+                            {plain_hook},
+                            // user's second command
+                            {foreign_after}
+                        ]
+                    }},
+                    {{"matcher":"*","hooks":[{native_hook}]}}
+                ]"#
+            ));
+            let edited = format!("{{\n// user's preferences\n\"theme\":\"dark\",\"hooks\":{{{},\"Stop\":[{{\"command\":\"notify-stop\"}}]}}\n}}\n", event_groups.join(",\n"));
+            std::fs::write(&file, &edited).unwrap();
+            let refreshed_ctx = Ctx { root: home.path().join("moved-root"), ..ctx };
+            let command = hook_command(&crate::paths::binary().unwrap(), &refreshed_ctx.root, agent);
+            let foreign_group = serde_json::json!({"matcher":"Edit","userField":{"keep":true},"hooks":[foreign_before,foreign_after]});
+            let managed_group = serde_json::json!({"matcher":"*","hooks":[{"type":"command","command":command,"timeout":if agent == "gemini" { 10_000 } else { 10 }}]});
+            let assert_config = |text: &str, managed: bool| {
+                let value = CstRootNode::parse(text, &Default::default()).unwrap().to_serde_value().unwrap();
+                assert_eq!(value["theme"], "dark", "{agent}");
+                assert_eq!(value["hooks"]["Stop"], serde_json::json!([{"command":"notify-stop"}]), "{agent}");
+                for event in events {
+                    let expected = if managed {
+                        serde_json::json!([foreign_group, managed_group])
+                    } else {
+                        serde_json::json!([foreign_group])
+                    };
+                    assert_eq!(value["hooks"][event], expected, "{agent}: {event}");
+                }
+                for comment in ["// user's preferences", "// user's matcher", "// user's first command", "// user's second command"] {
+                    assert!(text.contains(comment), "{agent}: lost {comment}");
+                }
+            };
+            configure(&refreshed_ctx, &options).unwrap();
+            let refreshed = std::fs::read_to_string(&file).unwrap();
+            assert_config(&refreshed, true);
+            configure(&refreshed_ctx, &options).unwrap();
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), refreshed, "{agent}: refresh duplicated hooks");
+            unconfigure(&refreshed_ctx).unwrap();
+            assert_config(&std::fs::read_to_string(&file).unwrap(), false);
+
+            // A later mixed-group edit survives unconfigure without refreshing first.
+            configure(&refreshed_ctx, &options).unwrap();
+            let installed = std::fs::read_to_string(&file).unwrap();
+            let root = CstRootNode::parse(&installed, &Default::default()).unwrap();
+            let late_hook = serde_json::json!({"type":"command","command":"notify-later","timeout":23,"userField":"keep"});
+            for event in events {
+                let groups = root.object_value().unwrap().object_value("hooks").unwrap().array_value(event).unwrap();
+                let group = groups.elements()[1].as_object().unwrap();
+                group.append("userField", "later".into());
+                let commands = group.array_value("hooks").unwrap();
+                commands.elements().into_iter().next().unwrap().remove();
+                commands.append(cst_value(&native_hook));
+                commands.append(cst_value(&late_hook));
+            }
+            std::fs::write(&file, root.to_string()).unwrap();
+            unconfigure(&refreshed_ctx).unwrap();
+            let removed = std::fs::read_to_string(&file).unwrap();
+            let value = CstRootNode::parse(&removed, &Default::default()).unwrap().to_serde_value().unwrap();
+            for event in events {
+                assert_eq!(value["hooks"][event], serde_json::json!([foreign_group, {"matcher":"*","userField":"later","hooks":[late_hook]}]), "{agent}: {event}");
+            }
+            assert_eq!(value["theme"], "dark", "{agent}");
+            assert_eq!(value["hooks"]["Stop"], serde_json::json!([{"command":"notify-stop"}]), "{agent}");
+            for comment in ["// user's preferences", "// user's matcher", "// user's first command", "// user's second command"] {
+                assert!(removed.contains(comment), "{agent}: lost {comment}");
+            }
+            assert!(load_journal(&refreshed_ctx.config_dir).is_empty(), "{agent}");
+        }
+    }
+
+    #[test]
+    fn flat_hook_refresh_preserves_foreign_commands_and_removes_owned_duplicates() {
+        let home = tempfile::tempdir().unwrap();
+        let command = hook_command(&home.path().join("herdr-projects"), home.path(), "copilot");
+        let old_command = hook_command(&home.path().join("old/herdr-projects"), home.path(), "copilot");
+        let plain_command = "/old/herdr-projects --root /r hook --agent copilot";
+        let foreign = serde_json::json!({"type":"command","command":"notify-user","timeoutSec":25,"userField":true});
+        let managed = serde_json::json!({"type":"command","command":command,"timeoutSec":10});
+        let mut input = serde_json::json!({"version":1,"userField":{"keep":true},"hooks":{}});
+        let mut expected = input.clone();
+        for event in ["SessionStart", "UserPromptSubmit", "PostToolUse"] {
+            input["hooks"][event] = serde_json::json!([
+                foreign,
+                {"type":"command","command":old_command,"timeoutSec":10},
+                {"type":"command","command":plain_command,"timeoutSec":10},
+                managed,
+                managed
+            ]);
+            expected["hooks"][event] = serde_json::json!([foreign, managed]);
+        }
+        let refreshed = hooks(&input.to_string(), &command, false).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&refreshed).unwrap();
+        assert_eq!(value, expected);
+        assert_eq!(hooks(&refreshed, &command, false).unwrap(), refreshed);
+        let removed = hooks(&refreshed, &command, true).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&removed).unwrap();
+        for event in ["SessionStart", "UserPromptSubmit", "PostToolUse"] {
+            expected["hooks"][event] = serde_json::json!([foreign]);
+        }
+        assert_eq!(value, expected);
+    }
+
+    #[test]
     fn the_skill_is_linked_once_into_a_shared_skills_dir_and_foreign_ones_are_left_alone() {
         let home = tempfile::tempdir().unwrap();
         let env = Env::for_test(home.path(), &[]);
@@ -691,14 +956,14 @@ mod tests {
         std::fs::create_dir_all(home.path().join("codex")).unwrap();
         std::fs::create_dir_all(&claude).unwrap();
         // Like this Mac: Claude's skills dir is itself a link to ~/.agents/skills.
-        std::os::unix::fs::symlink(&shared, claude.join("skills")).unwrap();
+        create_skill_link(&shared, &claude.join("skills"), &crate::runner::RealRunner).unwrap();
         let source = home.path().join("plugin/skill/autoproject");
         std::fs::create_dir_all(&source).unwrap();
         std::fs::write(source.join("SKILL.md"), "---\nname: autoproject\n---\n").unwrap();
-        let runner = crate::runner::fake::FakeRunner::new();
+        let runner = crate::runner::RealRunner;
         let ctx = Ctx { env: &env, root: home.path().join("root"), config_dir: home.path().join("cfg"), runner: &runner, detached_ticker: false };
         let options = |dry_run: bool, skill: &Path| ConfigureOptions { clients: vec![], claude_home: Some(claude.clone()), codex_home: Some(home.path().join("codex")), dry_run, hooks: true, sidebar: false, key: None, herdr_config: None, skill: Some(skill.to_path_buf()) };
-        let link = std::fs::canonicalize(&shared).unwrap().join(SKILL);
+        let link = crate::paths::canonicalize(&shared).unwrap().join(SKILL);
 
         // A plain directory already there (the old personal copy) is never touched.
         std::fs::create_dir_all(shared.join(SKILL)).unwrap();
@@ -730,8 +995,8 @@ mod tests {
         assert_eq!(skill_state(&link, &moved), SkillState::Missing);
         assert!(shared.is_dir());
         configure(&ctx, &options(false, &moved)).unwrap();
-        std::fs::remove_file(&link).unwrap();
-        std::os::unix::fs::symlink(home.path(), &link).unwrap();
+        remove_skill_link(&link).unwrap();
+        create_skill_link(home.path(), &link, &crate::runner::RealRunner).unwrap();
         let notes = unconfigure(&ctx).unwrap();
         assert!(notes.iter().any(|n| n.contains("left alone")), "{notes:?}");
         assert!(link.is_symlink());
@@ -770,7 +1035,9 @@ mod tests {
 
         configure(&ctx, &options(None)).unwrap();
         let text = std::fs::read_to_string(&config).unwrap();
-        assert!(text.contains("# my theme") && text.contains("prefix+a") && text.contains("$hp_sub") && text.contains("needs-you --line"));
+        let parsed: toml::Value = toml::from_str(&text).unwrap();
+        assert!(text.contains("# my theme") && text.contains("prefix+a") && text.contains("$hp_sub"));
+        assert!(parsed["ui"]["tab_bar_right"].as_array().unwrap().iter().any(|entry| entry["command"].as_str().is_some_and(is_tab_command)));
         assert_eq!(runner.count("config check"), 1);
         // A second run keeps the configured key.
         configure(&ctx, &options(None)).unwrap();

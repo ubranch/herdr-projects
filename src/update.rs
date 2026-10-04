@@ -7,8 +7,10 @@
 //!   when that passes, at the same plugin root, so the old binary keeps working
 //!   on a failure.
 //! - `herdr plugin link` to a git checkout: `git pull --ff-only` on `main`, then
-//!   the same build step, `scripts/install.sh`. It replaces the binary only when
-//!   the download or the build succeeds.
+//!   the same platform installer (`scripts/install.sh` or `scripts/install.ps1`).
+//!   It replaces the binary only when the download or the build succeeds.
+//!   On Windows the installer stages the build, then renames the old image aside
+//!   before installing the new one; it never overwrites a running executable.
 //!
 //! The build step downloads the release's prebuilt binary and falls back to
 //! `cargo build --release --locked`.
@@ -145,7 +147,17 @@ pub fn newer_release(runner: &dyn Runner, root: Option<&Path>) -> Option<Version
 }
 
 fn binary_in(root: &Path) -> PathBuf {
-    root.join("target/release/herdr-projects")
+    root.join(if cfg!(windows) { "target/release/herdr-projects.exe" } else { "target/release/herdr-projects" })
+}
+
+fn install_command(root: &Path) -> Cmd {
+    if cfg!(windows) {
+        Cmd::new("powershell.exe", BUILD_TIMEOUT)
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/install.ps1"])
+            .cwd(root)
+    } else {
+        Cmd::new("sh", BUILD_TIMEOUT).arg("scripts/install.sh").cwd(root)
+    }
 }
 
 /// The release of the binary at `binary`, from its `--version`.
@@ -204,8 +216,9 @@ fn fetch_and_build(ctx: &Ctx, herdr: &Herdr, install: &Install, latest: Version)
             if !out.success() {
                 bail!("`git pull --ff-only origin main` failed: {}", out.error_text());
             }
-            println!("installing the binary (scripts/install.sh: the prebuilt download, or a source build when there is none)…");
-            let out = ctx.runner.run(&Cmd::new("sh", BUILD_TIMEOUT).arg("scripts/install.sh").cwd(root))?;
+            let script = if cfg!(windows) { "scripts/install.ps1" } else { "scripts/install.sh" };
+            println!("installing the binary ({script}: the prebuilt download, or a source build when there is none)…");
+            let out = ctx.runner.run(&install_command(root))?;
             if !out.success() {
                 bail!("the install failed:\n{}", tail(&format!("{}\n{}", out.stdout, out.stderr)));
             }
@@ -266,11 +279,18 @@ pub fn run(ctx: &Ctx, check_only: bool) -> Result<()> {
 
     // An old ticker misreads files a newer `doctor --fix` writes: stop it first.
     crate::ticker::stop(&ctx.root).context("could not stop the ticker; nothing was changed")?;
-    let fetched = fetch_and_build(ctx, &herdr, &install, latest);
+    let fetched = fetch_and_build(ctx, &herdr, &install, latest).and_then(|()| {
+        let new = binary_version(ctx.runner, &binary)
+            .with_context(|| format!("the installer finished but {} could not report its version", binary.display()))?;
+        if new < latest {
+            bail!("the installer finished but the installed binary reports {new}, not v{latest} or newer");
+        }
+        Ok(new)
+    });
     // This process is the old binary: the rest runs the one in the plugin root,
     // which is the new one after a successful build and the old one otherwise.
     let fixed = match &fetched {
-        Ok(()) => {
+        Ok(_) => {
             println!("running doctor --fix with the new binary…");
             run_binary(ctx, &binary, &["doctor", "--fix"]).unwrap_or(false)
         }
@@ -280,8 +300,7 @@ pub fn run(ctx: &Ctx, check_only: bool) -> Result<()> {
     let ticker_note = if ticker { "" } else { "; `herdr-projects ticker start` failed, run it again" };
 
     match fetched {
-        Ok(()) => {
-            let new = binary_version(ctx.runner, &binary).map_or_else(|| "unknown".to_string(), |v| v.to_string());
+        Ok(new) => {
             println!("updated {current} → {new}");
             if !fixed || !ticker {
                 bail!(
@@ -291,7 +310,16 @@ pub fn run(ctx: &Ctx, check_only: bool) -> Result<()> {
             }
             Ok(())
         }
-        Err(error) => bail!("{error:#}\nupdate failed: {current} is still installed and the ticker was restarted{ticker_note}"),
+        Err(error) => {
+            let installed = binary_version(ctx.runner, &binary)
+                .map_or_else(|| "the installed binary could not be verified".to_string(), |v| format!("{v} is installed"));
+            let ticker_state = if ticker {
+                "the ticker was restarted"
+            } else {
+                "the ticker could not be restarted; run `herdr-projects ticker start`"
+            };
+            bail!("{error:#}\nupdate failed: {installed}; {ticker_state}")
+        }
     }
 }
 

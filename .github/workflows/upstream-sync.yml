@@ -1,0 +1,300 @@
+name: Upstream sync
+
+on:
+  schedule:
+    # UTC, best effort: GitHub can delay schedules or disable inactive forks.
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-sync-main
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'ubranch/herdr-projects' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      base_sha: ${{ steps.inventory.outputs.base_sha }}
+      upstream_sha: ${{ steps.inventory.outputs.upstream_sha }}
+      candidate_sha: ${{ steps.candidate.outputs.candidate_sha }}
+      changed: ${{ steps.candidate.outputs.changed }}
+    steps:
+      - name: Pin main and inventory all upstream branches and open PRs
+        id: inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import datetime
+          import html
+          import json
+          import os
+          import pathlib
+          import re
+          import urllib.parse
+          import subprocess
+
+          fork = 'ubranch/herdr-projects'
+          upstream = 'eliasstravik/herdr-projects'
+
+          def api(path, *, paginate=False):
+              command = [
+                  'gh', 'api', '--hostname', 'github.com',
+                  '--header', 'Accept: application/vnd.github+json',
+                  '--header', 'X-GitHub-Api-Version: 2022-11-28',
+                  path,
+              ]
+              if paginate:
+                  command.extend(['--paginate', '--slurp'])
+              result = json.loads(subprocess.check_output(command, text=True, encoding='utf-8'))
+              return [row for page in result for row in page] if paginate else result
+
+          if api(f'/repos/{fork}')['default_branch'] != 'main':
+              raise RuntimeError('Fork default branch must remain main; refusing another publication target')
+          base_sha = api(f'/repos/{fork}/git/ref/heads/main')['object']['sha']
+          branch = api(f'/repos/{upstream}')['default_branch']
+          upstream_sha = api(f'/repos/{upstream}/git/ref/heads/{urllib.parse.quote(branch, safe="")}')['object']['sha']
+          for sha in (base_sha, upstream_sha):
+              if not re.fullmatch(r'[0-9a-f]{40}', sha):
+                  raise RuntimeError('GitHub returned an invalid pinned commit SHA')
+          branches = sorted(api(f'/repos/{upstream}/branches?per_page=100', paginate=True), key=lambda row: row['name'])
+          pulls = sorted(api(f'/repos/{upstream}/pulls?state=open&per_page=100', paginate=True), key=lambda row: row['number'])
+          snapshot = {
+              'recorded_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'fork': fork, 'fork_branch': 'main', 'base_sha': base_sha,
+              'upstream': upstream, 'upstream_default_branch': branch, 'upstream_sha': upstream_sha,
+              'policy': 'TRACK ONLY: no feature-branch or open-PR code is checked out, tested or installed',
+              'branches': branches, 'open_pull_requests': pulls,
+          }
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'upstream-inventory.json').write_text(
+              json.dumps(snapshot, indent=2) + '\n', encoding='utf-8')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'base_sha={base_sha}\nupstream_sha={upstream_sha}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write(f'## Upstream inventory — TRACK ONLY\n\nFork main: `{base_sha}`\n\n'
+                            f'Pinned upstream default branch `{html.escape(branch)}`: `{upstream_sha}`\n\n'
+                            'Only the pinned upstream default-branch commit is eligible for integration. '
+                            'Unmerged branches and PRs are inventoried, never executed.\n\n'
+                            f'### All upstream branches ({len(branches)})\n\n')
+              for row in branches:
+                  url = f'https://github.com/{upstream}/tree/{urllib.parse.quote(row["name"], safe="")}'
+                  summary.write(f'- <a href="{url}">{html.escape(row["name"])}</a> '
+                                f'— `{row["commit"]["sha"]}`\n')
+              summary.write(f'\n### All open upstream PRs ({len(pulls)})\n\n')
+              for row in pulls:
+                  url = f'https://github.com/{upstream}/pull/{row["number"]}'
+                  summary.write(f'- <a href="{url}">#{row["number"]}: {html.escape(row["title"])}</a> '
+                                f'— `{row["head"]["sha"]}`\n')
+              summary.write('\nThe complete paginated API snapshot is the `upstream-inventory` artifact. '
+                            'Schedules are best effort, not real-time, and may be disabled after 60 days of inactivity.\n')
+          PY
+
+      - uses: actions/upload-artifact@v7
+        id: inventory_artifact
+        with:
+          name: upstream-inventory
+          path: ${{ runner.temp }}/upstream-inventory.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Link downloadable inventory
+        env:
+          INVENTORY_URL: ${{ steps.inventory_artifact.outputs.artifact-url }}
+        run: printf '\n[Download inventory snapshot](%s)\n' "$INVENTORY_URL" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.inventory.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove the merge boundary using disposable native Git repositories
+        shell: bash
+        run: bash scripts/test-sync-upstream.sh
+
+      - name: Prepare the candidate once using trusted fork-main script
+        id: candidate
+        env:
+          BASE_SHA: ${{ steps.inventory.outputs.base_sha }}
+          UPSTREAM_SHA: ${{ steps.inventory.outputs.upstream_sha }}
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          bash scripts/sync-upstream.sh https://github.com/eliasstravik/herdr-projects.git \
+            "$UPSTREAM_SHA" "$RUNNER_TEMP/upstream-candidate" >> "$GITHUB_OUTPUT"
+
+      - name: Record candidate policy
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.candidate_sha }}
+          CHANGED: ${{ steps.candidate.outputs.changed }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          printf '\n## Candidate\n\nExact candidate: `%s`\n\n' "$CANDIDATE_SHA" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$CHANGED" = true ]; then
+            echo 'Windows and Linux native checks must both pass before publishing this candidate.' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$EVENT_NAME" = workflow_dispatch ]; then
+            echo 'No upstream changes. Manual dispatch verifies current main; nothing will be published.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Upstream tip is already an ancestor of main. Scheduled builds and publication are skipped.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: upstream-candidate
+          path: |
+            ${{ runner.temp }}/upstream-candidate/candidate.bundle
+            ${{ runner.temp }}/upstream-candidate/candidate.sha
+          if-no-files-found: error
+          retention-days: 1
+
+  check:
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            suffix: '.exe'
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            suffix: ''
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    env:
+      # Never expose repository credentials to candidate build scripts or code.
+      GH_TOKEN: ''
+      GITHUB_TOKEN: ''
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: upstream-candidate
+          path: ${{ runner.temp }}/upstream-candidate
+
+      - name: Check out exactly the immutable same-run candidate
+        env:
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_sha }}
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+        shell: bash
+        run: |
+          artifact="$RUNNER_TEMP/upstream-candidate"
+          test "$(cat "$artifact/candidate.sha")" = "$CANDIDATE_SHA"
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git bundle verify "$artifact/candidate.bundle"
+          git -c core.hooksPath=/dev/null fetch --no-tags "$artifact/candidate.bundle" HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "$CANDIDATE_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" "$CANDIDATE_SHA"
+          git merge-base --is-ancestor "$UPSTREAM_SHA" "$CANDIDATE_SHA"
+          git -c core.hooksPath=/dev/null checkout --detach "$CANDIDATE_SHA"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+
+      - name: Install native stable Rust toolchain
+        shell: bash
+        run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+
+      - name: Test the exact candidate natively
+        shell: bash
+        run: cargo +stable test --locked --target ${{ matrix.target }}
+
+      - name: Build the actual debug CLI
+        shell: bash
+        run: cargo +stable build --locked --target ${{ matrix.target }}
+
+      - name: Smoke the actual CLI with an isolated temporary root and home
+        env:
+          CLI_TARGET: ${{ matrix.target }}
+          CLI_SUFFIX: ${{ matrix.suffix }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          import tempfile
+
+          binary = pathlib.Path('target', os.environ['CLI_TARGET'], 'debug',
+                                'herdr-projects' + os.environ['CLI_SUFFIX']).resolve()
+          with tempfile.TemporaryDirectory(prefix='upstream-smoke-', dir=os.environ['RUNNER_TEMP']) as temporary:
+              home = pathlib.Path(temporary, 'home')
+              home.mkdir()
+              root = pathlib.Path(temporary, 'projects')
+              environment = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
+              environment.pop('GH_TOKEN', None)
+              environment.pop('GITHUB_TOKEN', None)
+
+              def cli(*args):
+                  result = subprocess.run([str(binary), *args], env=environment, check=True,
+                                          text=True, encoding='utf-8', capture_output=True)
+                  print(result.stdout, end='')
+                  print(result.stderr, end='')
+                  return result.stdout
+
+              version = cli('--version')
+              if not version.startswith('herdr-projects '):
+                  raise RuntimeError('actual CLI did not report its version')
+              cli('--root', str(root), 'new', 'sync-smoke', '--goal', 'native upstream smoke')
+              if not (root / 'sync-smoke' / 'PROJECT.md').is_file():
+                  raise RuntimeError('new did not create an isolated project')
+              listing = cli('--root', str(root), 'list')
+              if not any(line.split('\t')[0] == 'sync-smoke' for line in listing.splitlines()):
+                  raise RuntimeError('list did not include the new project')
+              context = cli('--root', str(root), 'context', 'sync-smoke', '--peek')
+              if 'Goal: native upstream smoke' not in context:
+                  raise RuntimeError('context did not load the new project goal')
+          PY
+
+  publish:
+    needs: [prepare, check]
+    if: >-
+      github.repository == 'ubranch/herdr-projects' && github.ref == 'refs/heads/main' &&
+      needs.prepare.outputs.changed == 'true' && needs.check.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      # No candidate checkout or repository script is executed with write access.
+      - uses: actions/download-artifact@v8
+        with:
+          name: upstream-candidate
+          path: ${{ runner.temp }}/upstream-candidate
+
+      - name: Verify the tested candidate and fast-forward unchanged fork main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_sha }}
+        shell: bash
+        run: |
+          artifact="$RUNNER_TEMP/upstream-candidate"
+          test "$(cat "$artifact/candidate.sha")" = "$CANDIDATE_SHA"
+          git init "$RUNNER_TEMP/upstream-publish"
+          cd "$RUNNER_TEMP/upstream-publish"
+          git bundle verify "$artifact/candidate.bundle"
+          git -c core.hooksPath=/dev/null fetch --no-tags "$artifact/candidate.bundle" HEAD:refs/heads/candidate
+          test "$(git rev-parse refs/heads/candidate)" = "$CANDIDATE_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" "$CANDIDATE_SHA"
+          git merge-base --is-ancestor "$UPSTREAM_SHA" "$CANDIDATE_SHA"
+          git remote add origin https://github.com/ubranch/herdr-projects.git
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w 0)
+          remote_sha=$(git -c "http.extraHeader=AUTHORIZATION: basic $auth" ls-remote --exit-code origin refs/heads/main)
+          remote_sha=${remote_sha%%$'\t'*}
+          if [ "$remote_sha" != "$BASE_SHA" ]; then
+            printf '::error::Fork main advanced from %s to %s; refusing stale candidate. Run Upstream sync again.\n' "$BASE_SHA" "$remote_sha"
+            echo '## Publication refused: fork main moved since preparation. No push; dispatch a fresh run.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          # Ordinary non-force push also rejects divergent concurrent updates.
+          git -c core.hooksPath=/dev/null -c "http.extraHeader=AUTHORIZATION: basic $auth" \
+            push origin refs/heads/candidate:refs/heads/main
+          printf '\n## Published\n\nFast-forwarded main from `%s` to tested candidate [`%s`](https://github.com/ubranch/herdr-projects/commit/%s).\n\nThe checks in this run are the gate: GITHUB_TOKEN pushes do not trigger ordinary push CI.\n' \
+            "$BASE_SHA" "$CANDIDATE_SHA" "$CANDIDATE_SHA" >> "$GITHUB_STEP_SUMMARY"

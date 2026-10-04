@@ -1475,7 +1475,13 @@ fn fit(text: &str, width: usize) -> String {
 /// Copies text to the clipboard with the platform's tool.
 fn copy(text: &str) -> String {
     use std::process::{Command, Stdio};
-    let tools: &[(&str, &[&str])] = if cfg!(target_os = "macos") { &[("pbcopy", &[])] } else { &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"]), ("xsel", &["--clipboard", "--input"])] };
+    let tools: &[(&str, &[&str])] = if cfg!(windows) {
+        &[("powershell.exe", &["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[Console]::InputEncoding = [Text.UTF8Encoding]::new(); Set-Clipboard -Value ([Console]::In.ReadToEnd())"])]
+    } else if cfg!(target_os = "macos") {
+        &[("pbcopy", &[])]
+    } else {
+        &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"]), ("xsel", &["--clipboard", "--input"])]
+    };
     for (tool, args) in tools {
         if let Ok(mut child) = Command::new(tool).args(*args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
             if let Some(mut stdin) = child.stdin.take() {
@@ -1491,7 +1497,7 @@ fn copy(text: &str) -> String {
 
 /// Runs this binary with the same root; (success, last line of output).
 pub fn run_hp(ctx: &Ctx, args: &[String], stdin: Option<&str>) -> (bool, String) {
-    let Ok(binary) = std::env::current_exe() else {
+    let Ok(binary) = crate::paths::binary() else {
         return (false, "could not find this binary".into());
     };
     // Sweep and resolve may remove many worktrees; allow them time.
@@ -1517,21 +1523,29 @@ fn focus(ctx: &Ctx, socket: &str, machine: &str, pane: &str) {
     if herdr.agent_focus(pane).is_ok() {
         return;
     }
-    use std::os::unix::process::CommandExt;
-    let mut args = Vec::new();
-    if !machine.is_empty() {
-        args.extend(["--machine".to_string(), machine.to_string()]);
-    }
-    args.extend(["agent".to_string(), "focus".to_string(), pane.to_string()]);
-    let mut command = std::process::Command::new("/bin/sh");
+    let args = ["--machine", machine, "agent", "focus", pane];
+    let args = if machine.is_empty() { &args[2..] } else { &args[..] };
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "sleep 0.2; exec \"$@\"", "sh", &ctx.env.herdr_bin()]).args(args);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = std::process::Command::new("powershell.exe");
+        let script = format!("Start-Sleep -Milliseconds 200; {}", crate::remote::local_command(&ctx.env.herdr_bin(), args));
+        command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &script]);
+        command
+    };
     command
-        .args(["-c", "sleep 0.2; exec \"$@\"", "sh", &ctx.env.herdr_bin()])
-        .args(&args)
         .env("HERDR_SOCKET_PATH", socket)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
     unsafe {
+        use std::os::unix::process::CommandExt;
         command.pre_exec(|| {
             unsafe extern "C" {
                 fn setsid() -> i32;
@@ -1539,6 +1553,12 @@ fn focus(ctx: &Ctx, socket: &str, machine: &str, pane: &str) {
             setsid();
             Ok(())
         });
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     }
     let _ = command.spawn();
 }

@@ -160,7 +160,7 @@ pub fn start(ctx: &Ctx, slug: &str, args: StartArgs) -> Result<Thread> {
         // A remote path is stored as it is on its own machine.
         (Some(repo), false) => repo.clone(),
         (Some(repo), true) => {
-            let path = std::fs::canonicalize(repo)
+            let path = crate::paths::canonicalize(repo)
                 .with_context(|| format!("repository {repo} does not exist"))?
                 .to_string_lossy()
                 .into_owned();
@@ -320,7 +320,7 @@ fn place_tab(project: &Project, view: &SessionView, record: &Thread) -> Result<T
         }
         folder
     };
-    let folder = std::fs::canonicalize(&folder)?;
+    let folder = crate::paths::canonicalize(&folder)?;
     let created = match workspace {
         Some(id) => view.herdr.tab_create(&id, &folder, &record.title, false)?,
         // The coordinator runs in a pane of another workspace: the thread
@@ -980,7 +980,7 @@ pub fn final_copy(ctx: &Ctx, project: &Project, record: &Thread) -> thread::Copi
             Err(error) => thread::Copied { outcome: CopyOutcome::Failed(format!("{error:#}")), report_hash: None },
         }
     } else {
-        thread::copy_home_local(project, record, true, ctx.runner)
+        thread::copy_home_local(project, record, true)
     };
     if let Some(hash) = &copied.report_hash
         && *hash != record.report_hash
@@ -1002,7 +1002,11 @@ pub enum Removal {
 /// The thread's own workspace, when it is still open on its worktree. A pane
 /// elsewhere that happens to have `cd`'d into the worktree does not count.
 pub fn own_workspace(record: &Thread, panes: &[Pane]) -> Option<String> {
-    panes.iter().find(|p| p.workspace_id == record.workspace_id && Path::new(&p.cwd).starts_with(&record.worktree_path)).map(|p| p.workspace_id.clone())
+    panes.iter().find(|p| p.workspace_id == record.workspace_id && (if record.is_remote() {
+        Path::new(&p.cwd).starts_with(&record.worktree_path)
+    } else {
+        crate::paths::within_dir(Path::new(&p.cwd), Path::new(&record.worktree_path))
+    })).map(|p| p.workspace_id.clone())
 }
 
 /// A local worktree whose folder no longer exists: git and herdr would both
@@ -1230,18 +1234,21 @@ mod tests {
         assert_eq!(restart_plan(&stale, &gone(), false, now()).unwrap(), RestartPlan::Create);
     }
 
-    fn agent(state: &str) -> Agent {
-        Agent { pane_id: "w2:p1".into(), agent_status: state.into(), ..Agent::default() }
+    fn agent(state: &str, cwd: &str) -> Agent {
+        Agent { pane_id: "w2:p1".into(), cwd: cwd.into(), agent_status: state.into(), ..Agent::default() }
     }
 
     #[test]
     fn prompt_refusals_and_sending_while_working() {
-        let t = Thread { agent_name: String::new(), kind: Kind::Adopted, ..worktree_thread() };
+        let cwd = tempfile::tempdir().unwrap();
+        let t = Thread { cwd: cwd.path().to_string_lossy().into_owned(), agent_name: String::new(), kind: Kind::Adopted, ..worktree_thread() };
         assert!(prompt_state(&t, &[]).unwrap_err().to_string().contains("bare shell prompt"));
-        assert!(prompt_state(&t, &[agent("unknown")]).is_err());
-        assert!(prompt_state(&t, &[agent("blocked")]).unwrap_err().to_string().contains("agent_blocked"));
-        assert_eq!(prompt_state(&t, &[agent("working")]).unwrap(), "working");
-        assert_eq!(prompt_state(&t, &[agent("idle")]).unwrap(), "idle");
+        assert!(prompt_state(&t, &[agent("unknown", &t.cwd)]).is_err());
+        let wrong = Agent { pane_id: "w9:p9".into(), ..agent("working", &t.cwd) };
+        assert!(prompt_state(&t, &[wrong]).is_err());
+        assert!(prompt_state(&t, &[agent("blocked", &t.cwd)]).unwrap_err().to_string().contains("agent_blocked"));
+        assert_eq!(prompt_state(&t, &[agent("working", &t.cwd)]).unwrap(), "working");
+        assert_eq!(prompt_state(&t, &[agent("idle", &t.cwd)]).unwrap(), "idle");
     }
 
     #[test]

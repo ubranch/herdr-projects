@@ -17,7 +17,7 @@ fn hp(home: &Path, args: &[&str]) -> std::process::Output {
 #[test]
 fn context_prints_a_usable_prefix_in_a_scrubbed_environment() {
     let home = tempfile::tempdir().unwrap();
-    let root = home.path().join("my root");
+    let root = home.path().join("my root's café");
     let root_arg = root.to_str().unwrap();
     assert!(hp(home.path(), &["--root", root_arg, "new", "Demo"]).status.success());
 
@@ -25,17 +25,36 @@ fn context_prints_a_usable_prefix_in_a_scrubbed_environment() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let text = String::from_utf8(out.stdout).unwrap();
     let prefix = text.lines().next().unwrap().strip_prefix("Commands: ").unwrap();
-    // Fixed shape `<binary> --root <root>`, with the spaced root shell-quoted.
-    assert_eq!(prefix, format!("{BIN} --root '{root_arg}'"));
 
-    // The printed prefix works as typed, from a bare shell.
-    let listed = Command::new("/bin/sh")
-        .env_clear()
+    // Execute the printed command, including quoted paths, in the native shell.
+    #[cfg(unix)]
+    let mut shell = {
+        let mut command = Command::new("/bin/sh");
+        command.env_clear().arg("-c");
+        command
+    };
+    #[cfg(windows)]
+    let mut shell = {
+        let system_root = std::env::var_os("SystemRoot").expect("Windows has SystemRoot");
+        let mut command = Command::new(
+            Path::new(&system_root).join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+        );
+        command
+            .env_clear()
+            .env("SystemRoot", system_root)
+            // Without PATHEXT, PowerShell opens .exe files as documents instead
+            // of capturing native-command output and an exit code.
+            .env("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+            .env("TEMP", home.path())
+            .args(["-NoProfile", "-NonInteractive", "-Command"]);
+        command
+    };
+    let listed = shell
         .env("HOME", home.path())
-        .args(["-c", &format!("{prefix} list")])
+        .arg(format!("{prefix} list"))
         .output()
         .unwrap();
-    assert!(listed.status.success());
+    assert!(listed.status.success(), "{}", String::from_utf8_lossy(&listed.stderr));
     assert_eq!(String::from_utf8_lossy(&listed.stdout), "demo\tactive\tno threads\n");
 }
 
@@ -75,4 +94,24 @@ fn ticker_start_without_projects_creates_nothing() {
     assert!(hp(home.path(), &["ticker", "start"]).status.success());
     assert!(!home.path().join(".herdr-projects").exists());
     assert!(!home.path().join(".config").exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_uses_userprofile_when_home_is_unset() {
+    let home = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        Command::new(BIN)
+            .env_clear()
+            .env("USERPROFILE", home.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let created = run(&["new", "Native Home"]);
+    assert!(created.status.success(), "{}", String::from_utf8_lossy(&created.stderr));
+    assert!(home.path().join(".herdr-projects/native-home/PROJECT.md").is_file());
+    let listed = run(&["list"]);
+    assert!(listed.status.success(), "{}", String::from_utf8_lossy(&listed.stderr));
+    assert_eq!(String::from_utf8_lossy(&listed.stdout), "native-home\tactive\tno threads\n");
 }

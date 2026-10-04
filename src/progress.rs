@@ -225,7 +225,7 @@ pub fn eligible(event: &serde_json::Value) -> bool {
     if ["agent_id", "subagent_id", "agent_transcript_path"].iter().any(|key| event.get(key).is_some_and(|v| !v.is_null())) {
         return false;
     }
-    if event["transcript_path"].as_str().is_some_and(|p| p.contains("/subagents/")) {
+    if event["transcript_path"].as_str().is_some_and(|p| p.split(['/', '\\']).any(|part| part == "subagents")) {
         return false;
     }
     let name = event["hook_event_name"].as_str().unwrap_or("");
@@ -399,6 +399,7 @@ mod tests {
     fn helpers_and_the_reporters_own_call_do_not_trigger() {
         assert!(!eligible(&json!({"hook_event_name":"PostToolUse","agent_id":"child"})));
         assert!(!eligible(&json!({"hook_event_name":"PostToolUse","transcript_path":"/x/subagents/y.jsonl"})));
+        assert!(!eligible(&json!({"hook_event_name":"PostToolUse","transcript_path":r"C:\x\subagents\y.jsonl"})));
         assert!(!eligible(&json!({"hook_event_name":"PostToolUse","tool_input":{"command":"/p/herdr-projects --root /r report --percent 5 --activity x"}})));
         assert!(eligible(&json!({"hook_event_name":"PostToolUse","tool_input":{"command":"/p/herdr-projects --root /r context demo"}})));
         assert!(eligible(&json!({"hook_event_name":"SessionStart","source":"compact"})));

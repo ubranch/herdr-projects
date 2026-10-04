@@ -16,21 +16,17 @@ use crate::herdr::{Agent, Herdr, Pane};
 use crate::paths::{self, Ctx, SessionFlags};
 use crate::profiles::Role;
 use crate::project::{self, Coordinator, Project, Status};
-use crate::remote::quote;
+use crate::remote::{local_command, quote_local};
 use crate::{inbox, names, ticker};
 
 /// A coordinator counts as idle for a nudge once its `(agent_status,
 /// state_change_seq)` pair has been `idle` this long (four ticks).
 pub const NUDGE_IDLE_SECS: i64 = 60;
 
-/// `<binary> --root <root>`: the fixed shape every printed command starts
-/// with, so allow-list patterns can match on it. Values with spaces are quoted.
+/// `<binary> --root <root>` (with PowerShell's `&` on Windows): the fixed shape
+/// every printed command starts with, so allow-list patterns can match on it.
 pub fn command_prefix(binary: &Path, root: &Path) -> String {
-    format!(
-        "{} --root {}",
-        quote(&binary.to_string_lossy()),
-        quote(&root.to_string_lossy())
-    )
+    format!("{} --root {}", local_command(&binary.to_string_lossy(), &[]), quote_local(&root.to_string_lossy()))
 }
 
 pub fn current_prefix(root: &Path) -> Result<String> {
@@ -45,7 +41,8 @@ pub fn pane_matches(record: &Coordinator, pane: &Pane) -> bool {
     pane.pane_id == record.pane_id
         && pane.workspace_id == record.workspace_id
         && pane.tab_id == record.tab_id
-        && (pane.cwd == record.cwd || pane.foreground_cwd == record.cwd)
+        && (paths::same_dir(Path::new(&pane.cwd), Path::new(&record.cwd))
+            || paths::same_dir(Path::new(&pane.foreground_cwd), Path::new(&record.cwd)))
 }
 
 /// A coordinator of the project: any agent whose working directory is the
@@ -58,7 +55,8 @@ pub fn is_coordinator(record: &Coordinator, agent: &Agent) -> bool {
 /// The project's workspace is open when a listed pane of it works in the
 /// project folder (workspace ids repeat after a server restart).
 pub fn workspace_open(record: &Coordinator, panes: &[Pane]) -> bool {
-    !record.workspace_id.is_empty() && !record.cwd.is_empty() && panes.iter().any(|p| p.workspace_id == record.workspace_id && Path::new(&p.cwd).starts_with(&record.cwd))
+    !record.workspace_id.is_empty() && panes.iter().any(|p| p.workspace_id == record.workspace_id
+        && paths::within_dir(Path::new(&p.cwd), Path::new(&record.cwd)))
 }
 
 /// The workspace thread tabs go to: the recorded one while open, else any
@@ -68,7 +66,7 @@ pub fn project_workspace(record: &Coordinator, panes: &[Pane]) -> Option<String>
     if workspace_open(record, panes) {
         return Some(record.workspace_id.clone());
     }
-    panes.iter().find(|p| !record.cwd.is_empty() && Path::new(&p.cwd).starts_with(&record.cwd)).map(|p| p.workspace_id.clone())
+    panes.iter().find(|p| paths::within_dir(Path::new(&p.cwd), Path::new(&record.cwd))).map(|p| p.workspace_id.clone())
 }
 
 /// The record `open` would write for the most recently active agent working
@@ -295,7 +293,7 @@ pub fn open(ctx: &Ctx, slug: &str, options: &OpenOptions) -> Result<()> {
         let workspace = previous
             .as_ref()
             .map(|record| record.workspace_id.clone())
-            .filter(|id| panes.iter().any(|p| &p.workspace_id == id && Path::new(&p.cwd).starts_with(&dir)));
+            .filter(|id| panes.iter().any(|p| &p.workspace_id == id && paths::within_dir(Path::new(&p.cwd), &dir)));
         let created = match workspace {
             Some(id) => {
                 sync_label(&herdr, &id, &label);
@@ -631,14 +629,41 @@ mod tests {
 
     #[test]
     fn prefix_has_the_fixed_shape_and_quotes_spaces() {
+        let call = if cfg!(windows) { "& " } else { "" };
         assert_eq!(
             command_prefix(Path::new("/bin/hp"), Path::new("/r/oot")),
-            "/bin/hp --root /r/oot"
+            format!("{call}/bin/hp --root /r/oot")
         );
         assert_eq!(
             command_prefix(Path::new("/bin/hp"), Path::new("/my root")),
-            "/bin/hp --root '/my root'"
+            format!("{call}/bin/hp --root '/my root'")
         );
+    }
+
+    #[test]
+    fn printed_prefix_executes_with_spaces_and_apostrophes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("it's a $(root)");
+        std::fs::create_dir(&root).unwrap();
+        let binary = temp.path().join(if cfg!(windows) { "it's a helper.ps1" } else { "it's a helper.sh" });
+        if cfg!(windows) {
+            std::fs::write(&binary, "$ErrorActionPreference = 'Stop'\nif ($args[0] -ne '--root') { exit 3 }\n[IO.File]::WriteAllText([IO.Path]::Combine($args[1], 'ran.txt'), 'ok')\n").unwrap();
+        } else {
+            std::fs::write(&binary, "#!/bin/sh\ntest \"$1\" = --root || exit 3\nprintf ok > \"$2/ran.txt\"\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+        }
+        let command = command_prefix(&binary, &root);
+        let output = if cfg!(windows) {
+            std::process::Command::new("pwsh.exe").args(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &command]).output().unwrap()
+        } else {
+            std::process::Command::new("sh").args(["-c", &command]).output().unwrap()
+        };
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(std::fs::read_to_string(root.join("ran.txt")).unwrap(), "ok");
     }
 
     fn agent(pane: &str, cwd: &str, status: &str, seq: u64) -> Agent {
@@ -666,6 +691,48 @@ mod tests {
         // `open` ran it in a shell pane elsewhere: its own directory counts.
         let child = Agent { foreground_cwd: "/r/demo".into(), ..agent("w5:p1", "/tmp", "idle", 1) };
         assert!(is_coordinator(&record, &child));
+    }
+
+    #[test]
+    fn native_coordinator_directories_match_without_accepting_reused_panes() {
+        let home = tempfile::tempdir().unwrap();
+        let project = project::create(home.path(), "Demo", "", vec![]).unwrap();
+        let dir = project.dir();
+        std::fs::create_dir(dir.join("child")).unwrap();
+        let other = home.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        let record = Coordinator {
+            cwd: format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR),
+            pane_id: "w1:p1".into(),
+            tab_id: "w1:t1".into(),
+            workspace_id: "w1".into(),
+            ..Coordinator::default()
+        };
+        let pane = Pane {
+            pane_id: record.pane_id.clone(), tab_id: record.tab_id.clone(), workspace_id: record.workspace_id.clone(),
+            cwd: dir.to_string_lossy().into_owned(), ..Pane::default()
+        };
+        assert!(pane_matches(&record, &pane));
+        let descendant_record = Coordinator {
+            cwd: std::fs::canonicalize(&dir).unwrap().to_string_lossy().into_owned(),
+            workspace_id: record.workspace_id.clone(), ..Coordinator::default()
+        };
+        let descendant = Pane { cwd: dir.join("child").to_string_lossy().into_owned(), ..pane.clone() };
+        assert!(workspace_open(&descendant_record, std::slice::from_ref(&descendant)));
+        assert_eq!(project_workspace(&descendant_record, std::slice::from_ref(&descendant)), Some(record.workspace_id.clone()));
+        let escaped = Pane { cwd: dir.join("child/../../other").to_string_lossy().into_owned(), ..descendant };
+        assert!(!workspace_open(&descendant_record, std::slice::from_ref(&escaped)));
+        assert_eq!(project_workspace(&descendant_record, &[escaped]), None);
+        let alias = dir.join("child").join("..").to_string_lossy().into_owned();
+        let ours = agent(&record.pane_id, &alias, "idle", 1);
+        assert!(is_coordinator(&record, &ours));
+        assert_eq!(discover(&record, &[], std::slice::from_ref(&ours), "2026-10-04T12:00:00Z").len(), 1);
+        assert_eq!(found(&project, "socket", "session", std::slice::from_ref(&ours)).unwrap().pane_id, record.pane_id);
+        let child = Pane { cwd: other.to_string_lossy().into_owned(), foreground_cwd: alias, ..pane.clone() };
+        assert!(pane_matches(&record, &child));
+        assert!(!pane_matches(&record, &Pane { cwd: other.to_string_lossy().into_owned(), ..pane.clone() }));
+        assert!(!pane_matches(&record, &Pane { pane_id: "w1:p9".into(), ..pane }));
+        assert!(!is_coordinator(&record, &agent(&record.pane_id, &other.to_string_lossy(), "idle", 1)));
     }
 
     #[test]

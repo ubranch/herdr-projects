@@ -1,5 +1,5 @@
-//! ssh, scp and rsync to saved machines, and the one quoting helper. No other
-//! code builds a string that a shell will parse.
+//! SSH commands always use POSIX quoting. Native local commands use PowerShell
+//! on Windows and POSIX shell syntax elsewhere.
 
 use std::path::Path;
 use std::time::Duration;
@@ -17,11 +17,81 @@ const SSH_OPTIONS: [&str; 4] = ["-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
 /// Single-quote escaping: safe for any value in an `sh` command string. Plain
 /// words are left bare so printed commands stay readable and stable.
 pub fn quote(value: &str) -> String {
-    if is_plain(value) {
-        value.to_string()
-    } else {
-        format!("'{}'", value.replace('\'', r"'\''"))
+    let mut quoted = String::with_capacity(quoted_len(value, false));
+    append_quoted(&mut quoted, value, false);
+    quoted
+}
+
+/// Native local values, not values embedded in an SSH script. PowerShell's
+/// single-quoted strings double every delimiter (ASCII and U+2018–U+201B),
+/// preserving the original quote character instead of normalizing a filename.
+pub fn quote_local(value: &str) -> String {
+    let mut quoted = String::with_capacity(quoted_len(value, cfg!(windows)));
+    append_quoted(&mut quoted, value, cfg!(windows));
+    quoted
+}
+
+/// Generated local commands target PowerShell on native Windows, matching
+/// Herdr's Windows default shell; they do not guess from a user's `SHELL`.
+/// Program and arguments append directly into one exactly sized allocation.
+pub fn local_command(program: &str, args: &[&str]) -> String {
+    let powershell = cfg!(windows);
+    let capacity = if powershell { 2 } else { 0 }
+        + quoted_len(program, powershell)
+        + args.iter().map(|arg| 1 + quoted_len(arg, powershell)).sum::<usize>();
+    let mut command = String::with_capacity(capacity);
+    if powershell {
+        command.push_str("& ");
     }
+    append_quoted(&mut command, program, powershell);
+    for arg in args {
+        command.push(' ');
+        append_quoted(&mut command, arg, powershell);
+    }
+    command
+}
+
+fn quote_is_plain(value: &str, powershell: bool) -> bool {
+    if powershell {
+        !value.is_empty() && value.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'/' | b'.' | b'_' | b'-'))
+    } else {
+        is_plain(value)
+    }
+}
+
+fn quote_is_delimiter(c: char, powershell: bool) -> bool {
+    c == '\'' || powershell && matches!(c, '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}')
+}
+
+fn quoted_len(value: &str, powershell: bool) -> usize {
+    if quote_is_plain(value, powershell) {
+        return value.len();
+    }
+    let extra = value.matches(|c| quote_is_delimiter(c, powershell))
+        .map(|delimiter| if powershell { delimiter.len() } else { 3 })
+        .sum::<usize>();
+    value.len() + extra + 2
+}
+
+fn append_quoted(output: &mut String, value: &str, powershell: bool) {
+    if quote_is_plain(value, powershell) {
+        output.push_str(value);
+        return;
+    }
+    output.push('\'');
+    let mut start = 0;
+    for (index, delimiter) in value.match_indices(|c| quote_is_delimiter(c, powershell)) {
+        output.push_str(&value[start..index]);
+        if powershell {
+            output.push_str(delimiter);
+            output.push_str(delimiter);
+        } else {
+            output.push_str(r"'\''");
+        }
+        start = index + delimiter.len();
+    }
+    output.push_str(&value[start..]);
+    output.push('\'');
 }
 
 /// Only characters that no shell, and neither scp nor rsync in any of their
@@ -327,8 +397,65 @@ mod tests {
         assert_eq!(quote("-n"), "'-n'");
     }
 
+    #[test]
+    fn local_commands_carry_untrusted_filenames_to_a_real_program() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("it's O’Connor $(repo)");
+        std::fs::create_dir(&repo).unwrap();
+        let init = std::process::Command::new("git").arg("-C").arg(&repo).args(["init", "-q"]).output().unwrap();
+        assert!(init.status.success(), "{}", String::from_utf8_lossy(&init.stderr));
+        let file = "it's O’Connor ‘‚‛ $(file); [data] #.txt";
+        std::fs::write(repo.join(file), "unchanged").unwrap();
+        let repo_text = repo.to_string_lossy();
+        let script = local_command("git", &["-C", &repo_text, "add", "--", file]);
+        let cmd = if cfg!(windows) {
+            Cmd::new("pwsh.exe", Duration::from_secs(10)).args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &script])
+        } else {
+            Cmd::new("sh", Duration::from_secs(10)).args(["-c", &script])
+        };
+        let out = RealRunner.run(&cmd).unwrap();
+        assert!(out.success(), "{}", out.error_text());
+        let staged = std::process::Command::new("git").arg("-C").arg(&repo).args(["diff", "--cached", "--name-only", "-z"]).output().unwrap();
+        assert!(staged.status.success());
+        assert_eq!(staged.stdout, format!("{file}\0").as_bytes());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_literals_preserve_all_single_quotes_without_executing_path_data() {
+        let root = tempfile::tempdir().unwrap();
+        let received = root.path().join("received.txt");
+        let mut values = vec![
+            String::new(),
+            "O’Connor".to_string(),
+            "'‘’‚‛'".to_string(),
+            "notes $(Set-Content injected yes) ` ; # [data] “double”„.txt".to_string(),
+        ];
+        for delimiter in ['\'', '\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}'] {
+            values.push(format!("notes{delimiter}; Set-Content -LiteralPath injected -Value yes; #.txt"));
+        }
+        for shell in ["pwsh.exe", "powershell.exe"] {
+            for value in &values {
+                let script = format!(
+                    "function Receive {{ param([string]$Value) [IO.File]::WriteAllText($env:HP_QUOTE_RECEIVED, $Value, [Text.UTF8Encoding]::new($false)) }}\n{}",
+                    local_command("Receive", &[value])
+                );
+                let cmd = Cmd::new(shell, Duration::from_secs(10))
+                    .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &script])
+                    .env("HP_QUOTE_RECEIVED", received.to_string_lossy())
+                    .cwd(root.path());
+                let out = RealRunner.run(&cmd).unwrap();
+                assert!(out.success(), "{shell}: {}", out.error_text());
+                assert_eq!(std::fs::read(&received).unwrap(), value.as_bytes(), "{shell}: {value}");
+                assert!(!root.path().join("injected").exists(), "{shell}: path data executed");
+            }
+        }
+    }
+
+    #[cfg(unix)]
     const HOSTILE: [&str; 10] = ["$(touch /tmp/hp-pwned)", "`id`", "a'; rm -rf ~; echo '", "x\ny", "~/x", "-n", "a\\b\"c", "*", "!!", "a b  c"];
 
+    #[cfg(unix)]
     #[test]
     fn hostile_values_survive_a_real_shell_unchanged() {
         for hostile in HOSTILE {
@@ -337,6 +464,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn hostile_values_survive_the_double_shell_of_an_ssh_command() {
         // ssh hands its argument to the remote login shell, which runs our
@@ -349,6 +477,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_brief_script_works_against_a_real_repository_with_a_hostile_path() {
         // The same script, run locally through `sh -c` instead of ssh.

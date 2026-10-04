@@ -7,7 +7,8 @@
 //! `<root>/.renames/` asks it to wait until they are idle, close their panes,
 //! rename, and reopen the coordinator in the new folder, resuming its
 //! conversation. So an agent can rename its own project.
-//! The folder moves with one `rename(2)` under the project lock; everything
+//! The folder moves with one filesystem rename under persistent root-level
+//! source and destination slug locks; everything
 //! else that names the old slug or path is rewritten after it: the resolved
 //! thread records, the coordinator record, `AGENTS.md`, the `[safety]` table
 //! in config.toml (yolo and the profile allow-lists), routine approvals and
@@ -262,7 +263,7 @@ pub fn run(ctx: &Ctx, args: &Args) -> Result<Outcome> {
     if let Some(name) = args.name {
         step(&mut out, format!("set the display name to `{name}`"));
     }
-    step(&mut out, "rewrite AGENTS.md (CLAUDE.md links to it)".into());
+    step(&mut out, "rewrite AGENTS.md and synchronize CLAUDE.md".into());
     let threads = thread::list(&project);
     let rewritten = threads.iter().filter(|t| !t.is_remote() && [&t.cwd, &t.worktree_path, &t.thread_dir].iter().any(|p| moved(p, &old_paths, &canonical_new).is_some())).count();
     if rewritten > 0 {
@@ -325,20 +326,11 @@ pub fn run(ctx: &Ctx, args: &Args) -> Result<Outcome> {
         return Ok(out);
     }
 
-    // 1. The folder: one rename under the lock, so no writer lands in between.
-    let project = if resuming {
-        project
-    } else {
-        {
-            let _lock = project.lock()?;
-            std::fs::rename(&old_dir, &new_dir).with_context(|| format!("could not move {} to {}", old_dir.display(), new_dir.display()))?;
-        }
-        let moved_project = Project::load(&ctx.root, to)?;
-        moved_project.add_former_slug(from)?;
-        moved_project
-    };
+    // 1. Reserve both slugs through the move and its former-slug state write.
+    // Old-slug waiters then fail their existence check; new-slug writers use
+    // the same destination token that was held during the move.
+    let project = if resuming { project } else { project.rename_to(to)? };
     let finish = format!("; run `rename {from} {to}` again to finish");
-    project.add_former_slug(from).with_context(|| finish.clone())?;
 
     // 2. Inside the folder.
     if let Some(text) = &edited_md {

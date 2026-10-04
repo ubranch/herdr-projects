@@ -342,11 +342,38 @@ pub fn executable(kind: &str) -> &str {
     }
 }
 
-fn on_path(env: &Env, name: &str) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
-    env.var("PATH").unwrap_or("").split(':').filter(|d| !d.is_empty()).any(|dir| {
-        std::fs::metadata(Path::new(dir).join(name)).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    })
+/// The first executable a shell finds, including Windows PATHEXT suffixes.
+pub fn find_executable(env: &Env, name: &str) -> Option<PathBuf> {
+    find_executable_on_path(env.var("PATH").unwrap_or(""), env.var("PATHEXT"), name)
+}
+
+pub fn find_executable_on_path(path_var: &str, pathext: Option<&str>, name: &str) -> Option<PathBuf> {
+    if Path::new(name).components().count() > 1 {
+        return executable_in_dir(Path::new(""), pathext, name);
+    }
+    std::env::split_paths(path_var).find_map(|dir| executable_in_dir(&dir, pathext, name))
+}
+
+fn executable_in_dir(dir: &Path, pathext: Option<&str>, name: &str) -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = pathext;
+        let path = dir.join(name);
+        std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).then_some(path)
+    }
+    #[cfg(windows)]
+    {
+        let extensions = pathext.unwrap_or(".COM;.EXE;.BAT;.CMD");
+        let path = dir.join(name);
+        if path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
+            extensions.split(';').any(|suffix| suffix.trim().strip_prefix('.').is_some_and(|suffix| suffix.eq_ignore_ascii_case(ext)))
+        }) && path.is_file() {
+            return Some(path);
+        }
+        extensions.split(';').map(str::trim).filter(|ext| ext.starts_with('.'))
+            .map(|ext| dir.join(format!("{name}{ext}"))).find(|path| path.is_file())
+    }
 }
 
 /// Whether `kind` looks signed in, from files and variables only (no network,
@@ -386,7 +413,7 @@ fn signed_in(env: &Env, kind: &str) -> bool {
 
 /// The kinds whose CLI is on `PATH` and looks signed in, in Herdr's order.
 pub fn detect(env: &Env) -> Vec<String> {
-    crate::agents::KINDS.iter().filter(|k| on_path(env, executable(k)) && signed_in(env, k)).map(|k| k.to_string()).collect()
+    crate::agents::KINDS.iter().filter(|k| find_executable(env, executable(k)).is_some() && signed_in(env, k)).map(|k| k.to_string()).collect()
 }
 
 // ---------------------------------------------------------------- editing
@@ -761,13 +788,15 @@ mod tests {
 
     #[test]
     fn built_ins_are_the_installed_and_signed_in_kinds() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt as _;
         let home = tempfile::tempdir().unwrap();
         let bin = home.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         for name in ["claude", "codex", "cursor-agent", "omp", "gemini"] {
-            let path = bin.join(name);
+            let path = bin.join(if cfg!(windows) { format!("{name}.exe") } else { name.to_string() });
             std::fs::write(&path, "#!/bin/sh\n").unwrap();
+            #[cfg(unix)]
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         std::fs::write(bin.join("pi"), "not executable").unwrap();
@@ -783,6 +812,26 @@ mod tests {
         let config: Config = toml::from_str(CONFIG).unwrap();
         let names: Vec<String> = config.listed(&detect(&env)).into_iter().map(|p| p.name).collect();
         assert_eq!(names, strings(&["claude", "deep", "luna", "codex", "cursor", "omp"]));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn executable_lookup_preserves_drive_letters_and_respects_pathext() {
+        let home = tempfile::tempdir().unwrap();
+        let first = home.path().join("项目 first path");
+        let second = home.path().join("second path");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        std::fs::write(first.join("agent.cmd"), "").unwrap();
+        std::fs::write(second.join("agent.exe"), "").unwrap();
+        std::fs::write(first.join("agent"), "not a Windows executable").unwrap();
+        let path = std::env::join_paths([&first, &second]).unwrap().to_string_lossy().into_owned();
+        let env = Env::for_test(home.path(), &[("PATH", &path), ("PATHEXT", ".EXE;.CMD")]);
+        assert_eq!(crate::paths::canonicalize(&find_executable(&env, "agent").unwrap()).unwrap(), crate::paths::canonicalize(&first.join("agent.cmd")).unwrap());
+        assert_eq!(crate::paths::canonicalize(&find_executable(&env, "agent.exe").unwrap()).unwrap(), crate::paths::canonicalize(&second.join("agent.exe")).unwrap());
+        let env = Env::for_test(home.path(), &[("PATH", &path), ("PATHEXT", ".EXE")]);
+        assert_eq!(crate::paths::canonicalize(&find_executable(&env, "agent").unwrap()).unwrap(), crate::paths::canonicalize(&second.join("agent.exe")).unwrap());
+        assert!(find_executable(&env, "missing").is_none());
     }
 
     #[test]

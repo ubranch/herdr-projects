@@ -3,11 +3,16 @@ name = "Projects"
 version = "0.2.34"
 min_herdr_version = "0.9.1"
 description = "A coordinator conversation, parallel worker threads, shared memory and an overview of what needs you."
-platforms = ["macos", "linux"]
+platforms = ["macos", "linux", "windows"]
 
 [[build]]
 # Downloads the release binary; falls back to `cargo build --release --locked`.
+platforms = ["macos", "linux"]
 command = ["sh", "scripts/install.sh"]
+
+[[build]]
+platforms = ["windows"]
+command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/install.ps1"]
 
 [[startup]]
 command = ["target/release/herdr-projects", "startup"]

@@ -18,7 +18,7 @@ pub struct Space {
 }
 
 fn canonical(path: &str) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
+    crate::paths::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
 }
 
 /// The primary Space of `repo`: herdr's unlinked worktree grouping at its
@@ -160,11 +160,30 @@ mod tests {
     }
 
     fn primary_json(id: &str, repo: &str, focused: bool) -> String {
-        format!(r#"{{"workspace_id":"{id}","label":"repo","focused":{focused},"pane_count":1,"worktree":{{"repo_key":"{repo}/.git","checkout_path":"{repo}","is_linked_worktree":false}}}}"#)
+        serde_json::json!({
+            "workspace_id": id,
+            "label": "repo",
+            "focused": focused,
+            "pane_count": 1,
+            "worktree": {
+                "repo_key": format!("{repo}/.git"),
+                "checkout_path": repo,
+                "is_linked_worktree": false
+            }
+        }).to_string()
     }
 
     fn child_json(id: &str, repo: &str) -> String {
-        format!(r#"{{"workspace_id":"{id}","label":"x","pane_count":1,"worktree":{{"repo_key":"{repo}/.git","checkout_path":"/wt/{id}","is_linked_worktree":true}}}}"#)
+        serde_json::json!({
+            "workspace_id": id,
+            "label": "x",
+            "pane_count": 1,
+            "worktree": {
+                "repo_key": format!("{repo}/.git"),
+                "checkout_path": format!("/wt/{id}"),
+                "is_linked_worktree": true
+            }
+        }).to_string()
     }
 
     /// A resolved worktree thread that recorded `w9`, the repository's primary
@@ -192,7 +211,16 @@ mod tests {
             move |c| {
                 let pane = c.args.last().cloned().unwrap_or_default();
                 let group = if running.borrow().contains(&pane) { 200 } else { 100 };
-                Ok(ok(&format!(r#"{{"result":{{"process_info":{{"pane_id":"{pane}","shell_pid":100,"foreground_process_group_id":{group},"foreground_processes":[{{"pid":{group},"name":"zsh"}}]}}}}}}"#)))
+                Ok(ok(&serde_json::json!({
+                    "result": {
+                        "process_info": {
+                            "pane_id": pane,
+                            "shell_pid": 100,
+                            "foreground_process_group_id": group,
+                            "foreground_processes": [{"pid": group, "name": "zsh"}]
+                        }
+                    }
+                }).to_string()))
             },
         );
         world.runner.on("workspace close", ok(r#"{"result":{}}"#));

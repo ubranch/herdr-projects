@@ -40,7 +40,9 @@ pub fn project_for_workspace(ctx: &Ctx, workspace_id: &str, socket: &str) -> Opt
             let dir = Path::new(dir);
             let found = projects.iter().find(|(project, record)| {
                 let home = if record.cwd.is_empty() { project.canonical_dir() } else { PathBuf::from(&record.cwd) };
-                dir.starts_with(&home) || open_threads(project).iter().any(|t| t.kind == thread::Kind::Worktree && !t.worktree_path.is_empty() && dir.starts_with(canonical(&t.worktree_path)))
+                crate::paths::within_dir(dir, &home)
+                    || open_threads(project).iter().any(|t| t.kind == thread::Kind::Worktree
+                        && crate::paths::within_dir(dir, Path::new(&t.worktree_path)))
             });
             if let Some((project, _)) = found {
                 return Some(project.slug.clone());
@@ -57,11 +59,6 @@ pub fn project_for_workspace(ctx: &Ctx, workspace_id: &str, socket: &str) -> Opt
         .map(|(project, _)| project.slug.clone())
 }
 
-/// The path with symlinks resolved when it exists (herdr reports physical
-/// working directories).
-fn canonical(path: &str) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
-}
 
 /// The current workspace's project, without asking.
 pub fn resolve_slug_quiet(ctx: &Ctx) -> Option<String> {
@@ -308,6 +305,50 @@ mod tests {
         let beta = Project::load(&world.root, "beta").unwrap();
         crate::coordinator::save_live(&beta, &[crate::coordinator::LivePane { pane_id: "w4:p1".into(), workspace_id: "w4".into(), ..Default::default() }]).unwrap();
         assert_eq!(project_for_workspace(&ctx, "w4", &socket).as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn workspace_resolution_uses_real_native_aliases_without_claiming_other_folders() {
+        let world = World::new();
+        let project = world.project("demo", "a.sock");
+        let project_home = std::fs::canonicalize(project.dir()).unwrap();
+        project.update_coordinator(|record| record.cwd = project_home.to_string_lossy().into_owned()).unwrap();
+        let worktree = world.home.path().join("项目 worktree");
+        let child = worktree.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        let record_path = std::fs::canonicalize(&worktree).unwrap();
+        let thread = world.thread(&project, &record_path, |_| {});
+        let socket = project.coordinator().unwrap().socket;
+        let own_pane = crate::herdr::Pane { workspace_id: thread.workspace_id.clone(), cwd: child.to_string_lossy().into_owned(), ..crate::herdr::Pane::default() };
+        assert_eq!(threads::own_workspace(&thread, std::slice::from_ref(&own_pane)), Some(thread.workspace_id.clone()));
+        assert_eq!(threads::own_workspace(&thread, &[crate::herdr::Pane { workspace_id: "other workspace".into(), ..own_pane.clone() }]), None);
+        for cwd in [project.dir().join("threads"), child.clone(), child.join("..").join("child")] {
+            *world.panes.borrow_mut() = format!("[{}]", crate::scenarios::pane_json("w8", "w8:t1", "w8:p1", &cwd.to_string_lossy()));
+            assert_eq!(project_for_workspace(&world.ctx(), "w8", &socket).as_deref(), Some("demo"));
+        }
+        let other = world.home.path().join("项目 worktree sibling");
+        std::fs::create_dir(&other).unwrap();
+        assert_eq!(threads::own_workspace(&thread, &[crate::herdr::Pane { cwd: other.to_string_lossy().into_owned(), ..own_pane }]), None);
+        for cwd in [other, child.join("../..")] {
+            *world.panes.borrow_mut() = format!("[{}]", crate::scenarios::pane_json("w8", "w8:t1", "w8:p1", &cwd.to_string_lossy()));
+            assert_eq!(project_for_workspace(&world.ctx(), "w8", &socket), None);
+        }
+    }
+
+    #[test]
+    fn remote_worktree_paths_never_claim_a_local_workspace() {
+        let world = World::new();
+        let project = world.project("demo", "a.sock");
+        let worktree = world.home.path().join("remote-looking directory");
+        std::fs::create_dir(&worktree).unwrap();
+        world.thread(&project, &std::fs::canonicalize(&worktree).unwrap(), |thread| thread.machine = "box".into());
+        let socket = project.coordinator().unwrap().socket;
+        *world.panes.borrow_mut() = format!("[{}]", crate::scenarios::pane_json("w8", "w8:t1", "w8:p1", &worktree.to_string_lossy()));
+        assert_eq!(project_for_workspace(&world.ctx(), "w8", &socket), None);
+        let remote = Thread { machine: "box".into(), worktree_path: "/srv/repo".into(), workspace_id: "remote workspace".into(), ..Thread::default() };
+        let pane = crate::herdr::Pane { workspace_id: remote.workspace_id.clone(), cwd: "/srv/repo/child".into(), ..crate::herdr::Pane::default() };
+        assert_eq!(threads::own_workspace(&remote, std::slice::from_ref(&pane)), Some(remote.workspace_id.clone()));
+        assert_eq!(threads::own_workspace(&remote, &[crate::herdr::Pane { cwd: "/srv/repository".into(), ..pane }]), None);
     }
 
     #[test]

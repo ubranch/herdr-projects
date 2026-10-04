@@ -5,14 +5,24 @@ How Herdr Projects works, what it writes where, what its safety settings do and 
 ## How it works
 
 - **It relies on Herdr and nothing else.** No other plugin is needed or called. Pull requests open in your browser, text files open in a new Herdr tab running `$EDITOR`.
-- **A project is a folder.** `~/.herdr-projects/<slug>/` holds `AGENTS.md`, which tells any agent started in that folder that it is the coordinator and which commands to run. `CLAUDE.md` is a link to it. Several coordinators can share the folder.
+- **A project is a folder.** `~/.herdr-projects/<slug>/` holds `AGENTS.md`, which tells any agent started in that folder that it is the coordinator and which commands to run. `CLAUDE.md` is a relative symlink on Unix and a synchronized regular copy on Windows. Several coordinators can share the folder.
 - **The coordinator is an ordinary agent** following a skill (`herdr-projects skill` prints it). Plugin code does not route messages, plan work or decide anything.
-- **The binary does mechanics.** Starting a thread, copying reports, cleaning up after a resolve: each is one deterministic subcommand. It talks to Herdr through Herdr's CLI. The exception is the agent view (`focus`, `unfocus`, the default sort): Herdr 0.9.1 has no CLI for `agent.view.set`, so those send one JSON line to the socket.
+- **The binary does mechanics.** Starting a thread, copying reports, cleaning up after a resolve: each is one deterministic subcommand. It talks to Herdr through Herdr's CLI. The exception is the agent view (`focus`, `unfocus`, the default sort): Herdr has no CLI for `agent.view.set`, so those send one JSON line through a Unix socket or, on Windows, Herdr's native Win32 named pipe.
 - **Agents report their own progress.** `herdr-projects report --percent N --activity "..."`, run by the agent in its pane, writes one small JSON file per pane under `<root>/.progress/` which the ticker shows on the pane's sub-line for five minutes. Thread briefs and the coordinator skill carry the instructions, so any agent reports; hooks in Claude Code, Codex, Droid, Gemini CLI and Copilot CLI (installed by `configure`) also inject them and a reminder. There is no daemon and no database.
 - **Files are the record, prompts are nudges.** Threads write a report file, the ticker writes events to an inbox folder, and the coordinator reads state with `context` at the start of every turn. A missed prompt loses nothing.
 - **One ticker per projects root** checks every 15 seconds: coordinators (any agent in a project folder, also one started by hand in a project never opened), thread state and groups, sidebar tokens and the per-project grouping of agents and Spaces, pending prompts, changed reports, pull requests (every two minutes), routines, auto-resolve, notifications. Remote machines are polled once a minute.
-- **Tools are found even under a bare `PATH`.** The binary appends `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin` and `~/.cargo/bin` to its own `PATH`, so a ticker started by Herdr finds `gh` and `rsync`.
+- **Tools are found even under a bare `PATH`.** The binary appends Unix tool folders (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`) and the home `.local/bin` and `.cargo/bin`, never ahead of your existing entries. Windows also appends `%APPDATA%\npm` and `%LOCALAPPDATA%\Microsoft\WinGet\Links`. Herdr, Git, PowerShell 7 and your agent still need to be installed and discoverable; local copying does not require `rsync` or `du`.
 - **Cleanup is part of the flow, never forced.** Resolving a thread removes its worktree (Herdr and git refuse a dirty one, and the plugin never forces) and, once its pull request is merged, its local branch. Reports and library files always stay. Text from reports, pull requests and command output is never placed in a prompt.
+
+Native Windows local commands target PowerShell 7, including approved routine commands and the commands printed in briefs and `context`; keep the leading `&` before a quoted executable. Set Herdr's `[terminal] default_shell = "pwsh.exe"`. Hooks and tab-bar commands use encoded `pwsh.exe` wrappers, surviving CMD's extra parsing layer. Install/update scripts run through `powershell.exe`. SSH scripts and remote paths remain POSIX; a Windows port does not make a remote Windows shell a supported SSH target.
+
+On Windows, the `socket_path` returned by `herdr session list --json` still names `herdr.sock`, but that file is a regular liveness marker containing `notUnixSocket`. Direct requests use `\\.\pipe\<socket_path>` with the exact host-reported path string, not a canonicalized path or an address read from the marker. Pipe reads/writes have a bounded deadline and cancel outstanding overlapped I/O on timeout. Unix retains Unix-domain sockets.
+
+Local report/library copies use native filesystem operations on both platforms. Source reports, hashes and library files are read only after validating the opened handle as a singly linked regular file: source symlinks, Windows junctions and hardlinks are not followed/copied. Destination symlinks/junctions and overlapping source/destination trees are rejected. Each regular destination file is replaced atomically rather than written through, so an existing destination hardlink cannot modify its other names.
+
+The library cap is **50 MiB (52,428,800 logical bytes)**, not disk allocation. Preflight counts eligible files; an oversized library is skipped. Copying also shares one actual-transfer byte budget across all library files, so growth after preflight cannot bypass the cap. Exactly the cap is allowed; exceeding it returns a partial copy, discards the current staged file and leaves already-published files/report intact. A 60 second deadline covers library preflight and copying; timeout is a failed copy. The tree copy is not one transaction, and a partial/failed copy prevents automatic worktree removal unless you explicitly discard the uncopied files.
+
+Managed Windows artifact copies stay writable; Unix copies preserve source permissions. The copier never clears an existing destination's read-only attribute through a hardlink. A read-only destination that cannot be replaced causes a copy failure, preserving the already-copied report and the worktree.
 
 ## Where things live
 
@@ -30,12 +40,17 @@ How Herdr Projects works, what it writes where, what its safety settings do and 
   threads/<id>.next.md    Next lines the coordinator added    threads/<id>/  a tab thread's folder
   inbox/, inbox/done/     events for the coordinator
   library/<id>/           home copy of files a thread produced
-  .state/                 status, coordinator record, live coordinators, ticker state, lock
-~/.herdr-projects/.ticker.lock  .ticker.log  .progress/  .trash/
+  .state/                 status, coordinator record, live coordinators, ticker state
+~/.herdr-projects/.project-<slug>.lock          persistent per-project lock token
+~/.herdr-projects/.ticker.lock  .ticker.info  .ticker.log  .progress/  .trash/
 ~/.config/herdr-projects/config.toml             yours: root, profiles, safety tables, machines
 ~/.config/herdr-projects/owned.json              what `configure` changed, for `unconfigure`
 ~/.config/herdr-projects/approved-routines.json  written only by `routine approve`
 ```
+
+Here `~` is `HOME`, falling back to `USERPROFILE` on native Windows. Herdr Projects keeps its own config in `~/.config/herdr-projects` on both platforms; Herdr's Windows config/runtime directory is `%APPDATA%\herdr` (`XDG_CONFIG_HOME` wins when set), or `HERDR_CONFIG_PATH` for its config file.
+
+Per-project lock tokens live outside the project folder so rename/delete can move that folder on Windows. `.project-<slug>.lock` and `.ticker.lock` are persistent tokens: **never remove them while processes or waiters can exist**. Removing one can split waiters across different files. A token's existence is not evidence that its OS lock is held. Ticker PID, version, start time and tool paths are atomically published in `.ticker.info`; `.ticker.lock` no longer contains readable metadata. Before upgrading from the old Unix layout, run `ticker stop` with the old binary, then install, `doctor --fix` and `ticker start`. The Windows ticker starts detached; timeout-controlled native subprocess groups use process-tree termination rather than Unix signals.
 
 Every thread works from `<its working directory>/.herdr-project/<project>-<id>/`: `brief.md` (written by the binary), `report.md` and `library/` (written by the agent). In a git repository that folder is in `info/exclude`, so nothing in it is committed. Git therefore treats it as clean and removing a worktree deletes it, which is why a resolve keeps the worktree when the final copy home was partial.
 
@@ -63,7 +78,7 @@ Every thread works from `<its working directory>/.herdr-project/<project>-<id>/`
 | `popup [project]`, `focus [project]`, `unfocus`, `overview [project]`, `needs-you --line` | Views. |
 | `configure [--key K] [--hooks-only] [--dry-run]`, `unconfigure`, `report`, `progress` | Sidebar, keys, hooks, the `autoproject` skill, self-reports. |
 | `open-file <path>`, `open-url <url>` | Open a text file in a new tab with `$EDITOR`, or a PR in the browser. |
-| `ticker start \| run \| stop \| status`, `doctor [--fix]`, `skill` | Housekeeping. `doctor --fix` also relinks `~/.local/bin/herdr-projects`. |
+| `ticker start \| run \| stop \| status`, `doctor [--fix]`, `skill` | Housekeeping. `doctor --fix` refreshes the command in `$XDG_BIN_HOME` or `~/.local/bin`: a Unix symlink, or a Windows `.exe` copy with a source/SHA-256 ownership marker. Foreign or modified commands are left alone. |
 | `update [--check]` | Update to the newest release: fetch, rebuild, `doctor --fix`, restart the ticker. |
 
 ## Groups
@@ -192,7 +207,7 @@ Each task in `TASKS.md` has at most one owner, in brackets after its title. The 
 
 ## The allow-list for your coordinator
 
-The coordinator runs the binary every turn, so allow-list it in your agent by subcommand, never the bare binary. `context` prints the exact prefix (`Commands: <binary> --root <root>`); the patterns must start with it. For Claude Code, in the project folder's `.claude/settings.local.json`:
+The coordinator runs the binary every turn, so allow-list it in your agent by subcommand, never the bare binary. `context` prints the exact prefix; patterns must match the actual shell and prefix. The example below is for Claude Code's Unix `Bash` tool in the project folder's `.claude/settings.local.json`. On Windows the printed prefix is PowerShell (`& '<binary>' --root '<root>'`); use your harness's matching PowerShell/shell permission syntax rather than assuming these `Bash(...)` patterns apply.
 
 ```json
 { "permissions": { "allow": [
@@ -238,7 +253,7 @@ The coordinator runs the binary every turn, so allow-list it in your agent by su
 
 A file `routines/<name>.md` with TOML front matter; the body is the prompt.
 
-- `schedule = "every <N>m|h|d"` or `"daily HH:MM"` (local time): the coordinator gets the body as an inbox item when it is due; while that item is unhandled, later runs add none. With no coordinator running (any agent in the project folder counts), a due run does nothing, runs no command and is not made up later; `routine list`, the popup and `doctor` show it as `skipped: no coordinator`. `routine list` shows each routine's last and next run. An optional `command` runs (`sh -c`, in the project folder, 60 second timeout) only when `routine_commands = true` and you have run `herdr-projects routine approve <project> <name>` in a terminal; its output reaches the coordinator capped at 4,000 characters inside a fence labelled as untrusted.
+- `schedule = "every <N>m|h|d"` or `"daily HH:MM"` (local time): the coordinator gets the body as an inbox item when it is due; while that item is unhandled, later runs add none. With no coordinator running (any agent in the project folder counts), a due run does nothing, runs no command and is not made up later; `routine list`, the popup and `doctor` show it as `skipped: no coordinator`. `routine list` shows each routine's last and next run. An optional `command` runs (`sh -c` on Unix, `pwsh.exe -NoProfile -NonInteractive -Command` on Windows, in the project folder with a 60 second timeout) only when `routine_commands = true` and you have run `herdr-projects routine approve <project> <name>` in a terminal; its output reaches the coordinator capped at 4,000 characters inside a fence labelled as untrusted.
 - `on = "pr"`, optionally `events = ["opened", "checks-failed", "review", "merged"]`: fired by the ticker's pull request poll. The body goes to the thread whose pull request changed, as a prompt, with facts the binary generates (how many checks fail, how many comments, the `gh` commands to read them). It needs no coordinator, only the open thread.
 - Every project has `routines/pr-followup.md` (`checks-failed`, `review`): it tells the thread to fix failing checks and address review comments. Turn it off in the popup's routines section; `doctor --fix` puts it back if the file is missing.
 
@@ -253,7 +268,7 @@ A file `routines/<name>.md` with TOML front matter; the body is the prompt.
 
 ## Threads on other machines
 
-Save the machine with `herdr machine add --label <label> <ssh target>` (both machines need Herdr 0.9.1), then list a repo as `/path/on/machine@<label>` or pass `thread start --machine <label>`. The home machine owns the project; only outbound SSH from home is needed, in batch mode.
+Save the machine with `herdr machine add --label <label> <ssh target>` (both machines need Herdr 0.9.1 or newer; local Windows verification used 0.9.3), then list a repo as `/path/on/machine@<label>` or pass `thread start --machine <label>`. The home machine owns the project; only outbound SSH from home is needed, in batch mode. Remote execution still requires a POSIX host and shell, plus SSH/SCP and `rsync` on the copy path; this is separate from native local Windows operation.
 
 - **Profiles are the machine's own.** `thread start --machine m1 [--profile NAME]` runs `herdr-projects profile resolve [NAME]` on m1 over SSH, which prints m1's definition of that profile (harness, model and effort flags, arguments, `~/` expanded to m1's home) or, without a name, m1's `[defaults] thread_profile`. The thread record keeps it, and the ticker launches with it, so the profile need not exist here. The name must still be on this project's allow-list, checked again at every launch; yolo mode adds its flags as for any thread. `thread restart --profile` looks it up again. m1 needs a herdr-projects that has `profile resolve`; an older one is refused with a hint to run `herdr-projects update` there. A machine known only from config.toml `profiles` has no SSH access, so nothing starts on it from here.
 - The worktree, the brief and the report live on the remote machine. The home ticker polls it once a minute and copies a changed report with `scp` and the thread's `library/` with `rsync -rt` (symbolic links are never followed; a library over 50 MB is not copied).
@@ -265,7 +280,33 @@ Save the machine with `herdr machine add --label <label> <ssh target>` (both mac
 
 Install Herdr and this plugin on an always-on machine, keep the projects root there, open the project there, and attach from your laptop with `herdr --remote <ssh target>` (add `--session <name>` for a named session). The ticker runs on that machine. If Herdr asks whether to restart a remote server "that may not survive SSH connection loss", answering `n` keeps its panes.
 
+## Windows fork maintenance
+
+The maintenance policy for [`ubranch/herdr-projects`](https://github.com/ubranch/herdr-projects) is to preserve the Windows port on stable `main` and merge only [`eliasstravik/herdr-projects`'s upstream `main`](https://github.com/eliasstravik/herdr-projects). The workflow discovers upstream's default branch through GitHub's API. **Track only** applies to every other upstream branch and every open PR: inventory their metadata, but never check out, merge, test or install their code. This includes [upstream Windows PR #100](https://github.com/eliasstravik/herdr-projects/pull/100); it is not blindly merged. Once a PR merges into upstream `main`, it is an ordinary main update.
+
+Promotion requires tests and real compiled-CLI smoke checks for the exact merge candidate on `windows-2022` (native MSVC) and `ubuntu-24.04` (Linux). Each gate runs locked Cargo tests/builds and the CLI's `--version`, isolated-root `new`, `list` and `context --peek`. Only the publish job has write permission; it checks that fork `main` still matches the prepared base and pushes a fast-forward. Merge conflicts, failing gates or a changed base stop promotion and leave fork `main` unchanged. Never force-push, reset or automatically resolve conflicts over the port.
+
+### Enable, run and inspect
+
+1. Publish the reviewed port and [`.github/workflows/upstream-sync.yml`](../.github/workflows/upstream-sync.yml) to the fork's default branch, `main`. Enable Actions in the fork and enable **Upstream sync** if disabled. The workflow is restricted to this fork's `main`; publication and activation are prerequisites, not evidence that CI has passed.
+2. In the fork's [Actions](https://github.com/ubranch/herdr-projects/actions/workflows/upstream-sync.yml), select **Upstream sync → Run workflow → main → Run workflow**. There are no inputs. Manual dispatch runs the gates even when upstream has not changed; scheduled runs skip them when no update is needed.
+3. Open that run's **Summary** for the pinned SHAs, branch/open-PR inventory links and preparation/promotion outcome. Download **Artifacts → upstream-inventory** for `upstream-inventory.json`, retained for seven days. Read the gate job logs for actual test/smoke results; earlier local Windows verification is not proof of a new hosted run.
+
+The configured cron is `7,22,37,52 * * * *`: every 15 minutes, offset from the hour, in UTC. Each run refreshes the branch/open-PR inventory, even without a main update. This is best effort, not a continuous-service guarantee: [GitHub schedules](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule) run only from a workflow on the default branch and can be delayed or dropped. Scheduled workflows are [disabled by default on public forks and after 60 days without repository activity](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/disable-and-enable-workflows); re-enable **Upstream sync** in Actions and dispatch it manually when needed.
+
+### Update a local Windows checkout
+
+Until the reviewed port is published to fork `main`, rebuild the current port checkout. Afterwards, use a **clean `main` checkout** whose `origin` is `ubranch/herdr-projects`, then run:
+
+```powershell
+git pull --ff-only origin main
+```
+
+Rebuild/install deliberately with `scripts/install.ps1` using the [Windows update instructions](getting-started.md#updating). If the checkout is dirty or cannot fast-forward, preserve the development work and resolve it manually; do not reset it to upstream. Cloud sync updates only the fork repository: it does not install or overwrite local binaries or development work. Windows release assets remain unpublished; sync does not create a release.
+
 ## Development
+
+The helper scripts below are Unix-only. On native Windows, build with the source installer and use a scratch named Herdr session, a separate `HERDR_PROJECTS_ROOT`, `HERDR_CONFIG_PATH` and `XDG_BIN_HOME`; set `[terminal] default_shell = "pwsh.exe"` in the scratch config. Keep the user's existing OMP model/auth/skills rather than resetting or replacing them. The [native Windows manual checks](manual-test.md#native-windows-port) are acceptance cases, not a claim that every case has passed.
 
 ```bash
 cargo test                       # unit tests and scenarios against a scripted fake runner
@@ -274,5 +315,7 @@ scripts/dev-hp <subcommand>      # the binary against <repo>/.dev-root; pass --s
 scripts/dev-herdr <args>         # herdr against that session
 HERDR_CONFIG_PATH=<copy> ...     # point configure and `herdr config check` at a scratch config
 ```
+
+For gated-sync regression checks, run `bash scripts/test-sync-upstream.sh` from the repository root. It requires Git/Bash and uses temporary Git repositories.
 
 Never develop against your default session, `~/.herdr-projects` or your real `config.toml`. [`herdr-notes.md`](herdr-notes.md) records what was verified about Herdr, and [`manual-test.md`](manual-test.md) lists the acceptance checks, including the visual ones only a person can confirm.

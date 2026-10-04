@@ -203,7 +203,7 @@ pub fn project_view(slug: &str) -> serde_json::Value {
 /// What `configure` adds to the user's Herdr config.
 pub struct Spec {
     pub key: String,
-    /// The tab-bar command (absolute binary path; runs under `/bin/sh -lc`).
+    /// The tab-bar command, encoded for Windows' command host when necessary.
     pub tab_command: String,
 }
 
@@ -425,7 +425,7 @@ pub fn config_edit(input: &str, spec: &Spec, remove: bool) -> Result<String> {
         }
 
         // Tab bar: one command entry.
-        let is_ours = |v: &Value| v.as_inline_table().and_then(|t| t.get("command")).and_then(Value::as_str).is_some_and(|c| c.contains("needs-you --line"));
+        let is_ours = |v: &Value| v.as_inline_table().and_then(|t| t.get("command")).and_then(Value::as_str).is_some_and(crate::setup::is_tab_command);
         if ui.get("tab_bar_right").is_none() && !remove {
             ui["tab_bar_right"] = toml_edit::value(Array::new());
         }

@@ -2,8 +2,8 @@
 #
 # Runs when a release is published (`gh release create vX.Y.Z --verify-tag`).
 # Run it by hand with a tag to (re)build the assets of an existing release.
-# scripts/install.sh downloads these; every asset below must be present, or
-# the run fails so a broken release is noticed.
+# scripts/install.sh and scripts/install.ps1 download these; every asset must
+# be present, or the run fails so a broken release is noticed.
 name: Release binaries
 
 on:
@@ -30,15 +30,26 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-14
             runs: true
+            suffix: ''
           - target: x86_64-apple-darwin
             os: macos-14
             runs: false
+            suffix: ''
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
             runs: true
+            suffix: ''
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
             runs: true
+            suffix: ''
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            runs: true
+            suffix: '.exe'
+    defaults:
+      run:
+        shell: bash
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -57,22 +68,24 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Install Rust
+        shell: bash
         run: |
           rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
           rustup default stable
 
       - name: Build
+        shell: bash
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Name the binary
         run: |
           mkdir dist
-          cp target/${{ matrix.target }}/release/herdr-projects dist/herdr-projects-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/herdr-projects${{ matrix.suffix }} dist/herdr-projects-${{ matrix.target }}${{ matrix.suffix }}
 
       - name: Check it runs and reports the release version
         if: matrix.runs
         run: |
-          out=$(dist/herdr-projects-${{ matrix.target }} --version)
+          out=$(dist/herdr-projects-${{ matrix.target }}${{ matrix.suffix }} --version)
           echo "$out"
           case "$out" in
             "herdr-projects ${TAG#v}" | "herdr-projects ${TAG#v}+"*) ;;
@@ -82,7 +95,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: herdr-projects-${{ matrix.target }}
-          path: dist/herdr-projects-${{ matrix.target }}
+          path: dist/herdr-projects-${{ matrix.target }}${{ matrix.suffix }}
           if-no-files-found: error
 
   publish:
@@ -96,6 +109,7 @@ jobs:
         herdr-projects-x86_64-apple-darwin
         herdr-projects-aarch64-unknown-linux-musl
         herdr-projects-x86_64-unknown-linux-musl
+        herdr-projects-x86_64-pc-windows-msvc.exe
     steps:
       - uses: actions/download-artifact@v8
         with:

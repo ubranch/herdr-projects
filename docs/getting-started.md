@@ -4,15 +4,17 @@ Install the plugin, run `configure` once, create a project, and talk to its coor
 
 ## 1. Check the prerequisites
 
-- macOS or Linux, and [Herdr](https://herdr.dev) 0.9.1 or newer. Check with `herdr status`: both the client and the running server must be 0.9.1 or newer. After `herdr update`, a server that was already running stays on the old version until you restart it, and `herdr plugin link` or `install` then fails with `plugin_requires_newer_herdr`.
-- Only to build from source: Rust/Cargo 1.89 or newer and a C compiler. Releases carry prebuilt binaries for macOS and Linux on Apple Silicon/arm64 and Intel/x86_64, so most installs need neither. On macOS, `xcode-select --install` installs Apple's build tools. Install Rust with [rustup](https://rustup.rs).
+- macOS/Linux with [Herdr](https://herdr.dev) 0.9.1 or newer, or native Windows x64 (exercised with Herdr 0.9.3). Check `herdr status`: both the client and the running server must meet the requirement. After `herdr update`, restart an already-running server; otherwise `herdr plugin link` or `install` can fail with `plugin_requires_newer_herdr`. On Windows, install PowerShell 7 (`pwsh.exe`) and use it as Herdr's session shell.
+- To build from source: Rust/Cargo 1.89 or newer and a C compiler. Windows currently requires the `x86_64-pc-windows-msvc` Rust toolchain and Visual Studio C++ Build Tools with a Windows SDK; no Windows binary is published for this fork yet. Existing macOS/Linux releases carry arm64 and x86_64 binaries, so most Unix installs need neither. On macOS, `xcode-select --install` installs Apple's build tools. Install Rust with [rustup](https://rustup.rs).
 - Git.
-- An agent CLI Herdr can start, on `PATH`. Any of Herdr's 24 agent kinds works (`claude`, `codex`, `opencode`, `cursor`, `gemini` and more). Claude Code is the one exercised most. Every agent that can run a shell command reports its own progress: thread briefs and the coordinator skill carry the instructions. `configure` also installs hooks for Claude Code, Codex, Droid, Gemini CLI and Copilot CLI, which add a reminder about once a minute.
-- Optional: `gh`, logged in, for pull request follow-up; `ssh` and `rsync` for threads on other machines.
+- An installed, signed-in agent CLI Herdr can start, on `PATH` (`claude`, `codex`, `opencode`, `oh-my-pi` and more). Claude Code is the one exercised most on Unix; a native Windows coordinator has run with oh-my-pi 18.5.1 using the user's existing model, auth and skills. Every agent that can run a shell command reports its own progress: thread briefs and the coordinator skill carry the instructions. `configure` also installs hooks for Claude Code, Codex, Droid, Gemini CLI and Copilot CLI, which add a reminder about once a minute.
+- Optional: `gh`, logged in, for pull request follow-up; `ssh`, `scp` and `rsync` for threads on POSIX machines. Local report/library copying needs neither `rsync` nor `du`, including on Windows.
 
 The plugin needs no hosted service and no API key. It depends on Herdr and nothing else, no other plugin included.
 
 ## 2. Install the plugin
+
+### macOS/Linux
 
 ```bash
 herdr plugin install eliasstravik/herdr-projects
@@ -20,12 +22,52 @@ herdr plugin install eliasstravik/herdr-projects
 
 Review the install preview. Herdr clones the repository, runs `scripts/install.sh`, and registers the plugin. The script downloads the release's prebuilt binary for your machine and checks it against the release's `SHA256SUMS`. When there is no such binary, the download fails or the checksum does not match, it says so and runs the locked Cargo release build instead. Set `HERDR_PROJECTS_BUILD=source` to always build from source. A checkout with local changes, or on a commit after the release, also builds from source. Its startup command starts a background ticker only when you have at least one project.
 
-The install also links the binary to `~/.local/bin/herdr-projects` (`$XDG_BIN_HOME` when set), so `herdr-projects` works from a terminal. The plugin refreshes that link every time Herdr starts, and `herdr-projects doctor --fix` does too. It never replaces a file there, or a link to somewhere outside Herdr's plugin folder. If `~/.local/bin` is not on your `PATH`, add it in your shell profile (`doctor` says so):
+On Unix the command is a symlink at `~/.local/bin/herdr-projects` (`$XDG_BIN_HOME` when set). Startup and `doctor --fix` refresh plugin-owned or dangling links, never a regular file or a link to a different local checkout. If the bin directory is not on your `PATH`, add it in your shell profile (`doctor` says so):
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 herdr-projects doctor
 ```
+
+### Native Windows x64: this checkout
+
+The [ubranch fork](https://github.com/ubranch/herdr-projects) has no published Windows asset, and the local `feat/windows-port` branch has not been pushed. Use the checkout containing this port; cloning a remote branch or installing the upstream plugin does not install these changes. `herdr plugin link` registers a checkout but does not build it.
+
+In PowerShell 7, from the current checkout:
+
+```powershell
+Set-Location -LiteralPath 'C:\Projects\herdr-projects'
+$env:HERDR_PROJECTS_BUILD = 'source'
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+if ($LASTEXITCODE -ne 0) { throw 'Install failed; do not continue.' }
+herdr plugin link .
+if ($LASTEXITCODE -ne 0) { throw 'Plugin link failed; do not continue.' }
+& .\target\release\herdr-projects.exe doctor --fix
+```
+
+The installer stages a locked Cargo release build, runs its `--version`, then replaces `target\release\herdr-projects.exe` by rename so it does not overwrite a running image. Failed build/validation leaves the installed binary alone; a failed replacement attempts rollback. When a matching Windows release exists, downloads must also match its unique `SHA256SUMS` entry and report the expected version before installation.
+
+Startup or the explicit `doctor --fix` above installs a regular `herdr-projects.exe` command copy with `.herdr-projects-command.json` recording its source and SHA-256. It uses `$env:XDG_BIN_HOME`, else `~\.local\bin`; `~` is `$env:HOME`, falling back to `$env:USERPROFILE`. Foreign, modified, or unmarked commands are left alone. No command symlink privileges are needed.
+
+Add that bin directory to this shell's `PATH`:
+
+```powershell
+$homeDir = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
+$binDir = if ($env:XDG_BIN_HOME) { $env:XDG_BIN_HOME } else { Join-Path $homeDir '.local\bin' }
+$env:Path = "$binDir;$env:Path"
+herdr-projects doctor
+```
+
+For future shells, add `$binDir`'s resolved path to your **user Path** in Windows Environment Variables. Restart Herdr from a shell with `pwsh.exe`, Git, your agent CLI and the command directory on `PATH`; an already-running server retains its old environment.
+
+In Herdr's existing config (`%APPDATA%\herdr\config.toml` by default on Windows), set or update the existing terminal setting; do not replace the rest of your config:
+
+```toml
+[terminal]
+default_shell = "pwsh.exe"
+```
+
+Generated local commands and coordinator briefs use PowerShell syntax; keep their leading `&` and quoted paths. Hooks and the tab-bar command launch `pwsh.exe -EncodedCommand`, so they also work when Herdr invokes them through CMD. Installation uses Windows PowerShell (`powershell.exe`); SSH commands remain POSIX shell commands.
 
 ## 3. Run configure once
 
@@ -34,11 +76,11 @@ herdr-projects configure --dry-run   # shows what it would change
 herdr-projects configure
 ```
 
-Or run `herdr plugin action invoke configure --plugin herdr-projects`. It changes four things and records each change, so `herdr-projects unconfigure` removes exactly what it added:
+Or run `herdr plugin action invoke configure --plugin herdr-projects`. It records each change, so `herdr-projects unconfigure` removes exactly what it added:
 
-- **Your Herdr config** (`~/.config/herdr/config.toml`). The sub-line row under agents (`$hp_sub`), a one-line card in place of Herdr's built-in rows that shows each project's head in bold (rows you wrote yourself are left alone), the popup key `prefix+a` and a tab-bar entry `projects: N need you`. Herdr checks the result with `herdr config check` before anything is written. Pick another key with `configure --key prefix+y`; a key Herdr or you already use is refused.
-- **Progress hooks** for each installed harness: Claude Code (`~/.claude/settings.json`), Codex (`~/.codex/hooks.json`), Droid (`~/.factory/settings.json`), Gemini CLI (`~/.gemini/settings.json`) and Copilot CLI (its own `~/.copilot/hooks/herdr-projects.json`). They tell an agent running in a Herdr pane how to report its progress, and remind it about once a minute. Outside Herdr they do nothing. Existing hooks and comments are kept.
-- **The `autoproject` skill**, linked from the plugin's `skill/autoproject` into `~/.claude/skills` and Codex's `~/.agents/skills`. A coordinator loads it with `/autoproject` to run an independently reviewed improvement loop. A skill of that name that is not the plugin's link is left alone, and `doctor` names it. If you configured before the skill shipped, `update` links it for you.
+- **Your Herdr config** (`~/.config/herdr/config.toml` on Unix; `%APPDATA%\herdr\config.toml` on Windows, or the `XDG_CONFIG_HOME`/`HERDR_CONFIG_PATH` override). The sub-line row under agents (`$hp_sub`), a one-line card in place of Herdr's built-in rows that shows each project's head in bold (rows you wrote yourself are left alone), the popup key `prefix+a` and a tab-bar entry `projects: N need you`. Herdr checks the result with `herdr config check` before anything is written. Pick another key with `configure --key prefix+y`; a key Herdr or you already use is refused.
+- **Progress hooks** for each installed harness: Claude Code (`~/.claude/settings.json`), Codex (`~/.codex/hooks.json`), Droid (`~/.factory/settings.json`), Gemini CLI (`~/.gemini/settings.json`) and Copilot CLI (its own `~/.copilot/hooks/herdr-projects.json`). They tell an agent running in a Herdr pane how to report its progress, and remind it about once a minute. Outside Herdr they do nothing. Existing hooks and comments are kept; the Windows wrappers use encoded PowerShell commands rather than POSIX redirections.
+- **The `autoproject` skill**, linked from the plugin's `skill/autoproject` into `~/.claude/skills` and Codex's `~/.agents/skills`: symlinks on Unix, NTFS directory junctions on Windows without elevation or Developer Mode. A coordinator loads it with `/autoproject` to run an independently reviewed improvement loop. An unrelated skill of that name is left alone, and `doctor` names it. If you configured before the skill shipped, `doctor --fix` installs it for configured harnesses.
 
 Configure reloads the Herdr server's config. The sidebar rows are drawn by your client: if they don't show yet, run **reload config** in Herdr (`prefix+shift+r`).
 
@@ -53,7 +95,9 @@ herdr-projects new "Billing" --goal "Ship the new billing page" --repo ~/dev/app
 herdr-projects open billing
 ```
 
-`new` creates `~/.herdr-projects/billing/` with an `AGENTS.md` (and `CLAUDE.md` linked to it). `open` starts your agent in that folder, right in the pane you typed it in. Quit the agent and you are back at your shell. The agent reads `AGENTS.md`, which tells it that it is the coordinator and which two commands to run. Nothing is typed into it for you.
+On Windows, use a native repo path, for example `herdr-projects new "Billing" --goal "Ship the new billing page" --repo 'C:\dev\app'`, then `herdr-projects open billing`. The plain CLI commands below also run in PowerShell; use PowerShell syntax for paths and shell expressions.
+
+`new` creates `~/.herdr-projects/billing/` with an `AGENTS.md` and matching `CLAUDE.md`: a relative symlink on Unix, a synchronized regular file on Windows. Plugin priming repairs and renames keep the Windows copy current. A Windows copy is considered plugin-owned only when its bytes match the current or prior `AGENTS.md`; an unrelated file is saved as `CLAUDE.md.before-herdr-projects`. If that backup already exists, a conflict preserves both foreign files rather than deleting one or creating more backups; a name change reports that conflict too. `open` starts your agent in that folder, right in the pane you typed it in. Quit the agent and you are back at your shell. The agent reads `AGENTS.md`, which tells it that it is the coordinator and which two commands to run. Nothing is typed into it for you.
 
 - `open billing --tab` starts it in a new tab of the project's own workspace instead. The plugin's actions and the popup always do that, and so does `open` run outside Herdr.
 - When a coordinator is already running, `open` jumps to it. `open --new` starts another beside it, with a fresh conversation.
@@ -89,14 +133,31 @@ herdr-projects doctor --fix    # repairs the plugin's own files in each project
 herdr-projects ticker status
 ```
 
-- **A project made with an older version**: `doctor --fix` adds `AGENTS.md`, the `CLAUDE.md` link, `uploads/` and `routines/pr-followup.md`, rewrites binary paths that point at a moved binary, and links the `autoproject` skill for each harness you configured. It never touches another plugin's entries.
-- **`open` says the session is not reachable**: run it inside Herdr, or pass `--session <name>`. A project belongs to the session it was first opened in.
+- **A project made with an older version**: `doctor --fix` adds `AGENTS.md`, matching `CLAUDE.md` (Unix link or Windows copy), `uploads/` and `routines/pr-followup.md`, rewrites binary paths that point at a moved binary, and links the `autoproject` skill for each harness you configured. It never touches another plugin's entries.
+- **`open` says the session is not reachable**: run it inside Herdr, or pass `--session <name>`. A project belongs to the session it was first opened in. On Windows `herdr.sock` is a regular liveness marker containing `notUnixSocket`, not a Unix socket; direct view requests use Herdr's named pipe.
 - **A thread stays at "no agent"**: the ticker launches agents, one per machine per tick (about 15 seconds). After three failed launches the thread is marked failed with the reason; `thread restart` tries again.
 - **Herdr was restarted**: Herdr resumes Claude and Codex panes itself; the ticker gives resumed threads their names back. Threads of other agents need `thread restart`.
 
 ## Updating
 
-**Once, if you're on 0.2.2 or older** (`herdr-projects --version`), which has no `update` yet:
+**Native Windows checkout:** `update` is release-driven and linked installs must be clean and on `main`. It is not a way to update the unpublished local `feat/windows-port` branch. To reinstall this checkout, stop the ticker with the installed binary, rerun the source installer, then use the new binary:
+
+```powershell
+herdr-projects ticker stop
+if ($LASTEXITCODE -ne 0) { throw 'Ticker did not stop; do not replace the binary.' }
+$env:HERDR_PROJECTS_BUILD = 'source'
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+if ($LASTEXITCODE -ne 0) {
+    herdr-projects ticker start
+    throw 'Install failed; read the installer error before retrying.'
+}
+& .\target\release\herdr-projects.exe doctor --fix
+& .\target\release\herdr-projects.exe ticker start
+```
+
+Run this from the checkout. If an earlier Unix ticker is running when adopting this port, stop it **with the old binary before replacing it**: `.ticker.lock` is now a persistent lock token and readable metadata is in `.ticker.info`. Do not delete either ticker or project lock tokens to clear a stale status; status follows the held OS lock, not the presence of a file.
+
+**Once, on macOS/Linux if you're on 0.2.2 or older** (`herdr-projects --version`), which has no `update` yet:
 
 ```bash
 herdr-projects ticker stop

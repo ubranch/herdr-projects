@@ -1,0 +1,2 @@
+# Git Bash entrypoints need LF even in Windows checkouts with core.autocrlf.
+*.sh text eol=lf

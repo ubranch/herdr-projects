@@ -131,6 +131,7 @@ fn report(
     for (tool, args, required) in [
         ("git", vec!["--version"], true),
         ("ssh", vec!["-V"], true),
+        #[cfg(unix)]
         ("rsync", vec!["--version"], false),
         ("gh", vec!["--version"], false),
     ] {
@@ -221,7 +222,7 @@ fn report(
         let label = format!("files {slug}");
         let problems = project::priming_problems(&project, &prefix);
         if problems.is_empty() {
-            check(&mut out, Some(true), &label, "AGENTS.md, CLAUDE.md link and uploads/ are in place".into());
+            check(&mut out, Some(true), &label, "AGENTS.md, CLAUDE.md and uploads/ are in place".into());
         } else if fix {
             match project::write_priming(&project, &prefix) {
                 Ok(()) => check(&mut out, Some(true), &label, format!("fixed: {}", problems.join("; "))),
@@ -543,7 +544,7 @@ mod tests {
         std::fs::remove_dir(project.dir().join("uploads")).unwrap();
         let flags = SessionFlags::default();
         let (text, _) = report(&env, &root, &home.path().join("cfg"), &flags, &runner, false, None);
-        assert!(text.contains("[warn] files demo: AGENTS.md is missing; CLAUDE.md is not a link to AGENTS.md; uploads/ is missing; `doctor --fix` repairs this"), "{text}");
+        assert!(text.contains("[warn] files demo: AGENTS.md is missing") && text.contains("CLAUDE.md") && text.contains("uploads/ is missing; `doctor --fix` repairs this"), "{text}");
         assert!(!project.dir().join("AGENTS.md").exists());
 
         let (text, _) = report(&env, &root, &home.path().join("cfg"), &flags, &runner, true, None);
@@ -551,7 +552,7 @@ mod tests {
         assert!(project.dir().join("AGENTS.md").is_file());
         assert!(project.dir().join("uploads").is_dir());
         let (text, _) = report(&env, &root, &home.path().join("cfg"), &flags, &runner, false, None);
-        assert!(text.contains("[ok  ] files demo: AGENTS.md, CLAUDE.md link and uploads/ are in place"), "{text}");
+        assert!(text.contains("[ok  ] files demo: AGENTS.md, CLAUDE.md and uploads/ are in place"), "{text}");
     }
 
     /// exe.dev VMs: `origin` is on `github.localhost` and plain `gh` is logged
@@ -567,7 +568,8 @@ mod tests {
         let on_host = |cmd: &Cmd| cmd.program == "gh" && cmd.env.contains(&("GH_HOST".into(), "github.localhost".into()));
         for reachable in [true, false] {
             let runner = FakeRunner::new();
-            runner.on_fn(|cmd| cmd.display().ends_with("/app remote get-url origin"), |_| Ok(ok("http://github.localhost/eliasstravik/app.git\n")));
+            let repo = crate::paths::canonicalize(&repo).unwrap().to_string_lossy().into_owned();
+            runner.on_fn(move |cmd| cmd.program == "git" && cmd.args == ["-C", &repo, "remote", "get-url", "origin"], |_| Ok(ok("http://github.localhost/eliasstravik/app.git\n")));
             if reachable {
                 runner.on_fn(on_host, |_| Ok(ok("eliasstravik\n")));
             }
@@ -610,6 +612,11 @@ mod tests {
         let claude = home.path().join("claude-config");
         let env = Env::for_test(home.path(), &[("CLAUDE_CONFIG_DIR", claude.to_str().unwrap())]);
         let runner = runner_with_herdr("herdr 0.9.1\n");
+        #[cfg(windows)]
+        runner.on_fn(
+            |cmd| cmd.program == "pwsh.exe" && cmd.args.last().is_some_and(|script| script.contains("-ItemType Junction")),
+            |cmd| crate::runner::RealRunner.run(cmd),
+        );
         let root = home.path().join("root");
         let cfg = home.path().join("cfg");
         let flags = SessionFlags::default();
@@ -642,11 +649,15 @@ mod tests {
         assert_eq!(crate::setup::skill_state(&link, &moved), crate::setup::SkillState::Ours);
 
         // A directory of the same name is never touched.
+        #[cfg(unix)]
         std::fs::remove_file(&link).unwrap();
+        #[cfg(windows)]
+        std::fs::remove_dir(&link).unwrap();
         std::fs::create_dir(&link).unwrap();
         let (text, _) = report(&env, &root, &cfg, &flags, &runner, true, Some(&moved));
         assert!(text.contains("is not this plugin's link"), "{text}");
         assert_eq!(crate::setup::skill_state(&link, &moved), crate::setup::SkillState::Foreign);
+        assert_eq!(std::fs::read_to_string(moved.join("SKILL.md")).unwrap(), "x");
     }
 
     #[test]

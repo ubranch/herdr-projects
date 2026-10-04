@@ -104,7 +104,7 @@ pub fn set_in(text: &str, key: &str, value: &str) -> Result<String> {
             }
             let path = match repo.machine {
                 Some(_) => repo.path.clone(),
-                None => std::fs::canonicalize(&repo.path).map(|p| p.to_string_lossy().into_owned()).unwrap_or(repo.path.clone()),
+                None => crate::paths::canonicalize(Path::new(&repo.path)).map(|p| p.to_string_lossy().into_owned()).unwrap_or(repo.path.clone()),
             };
             normalize_repos(&mut doc)?;
             let repos = doc["repos"].as_array_of_tables_mut().context("`repos` must be [[repos]] tables")?;
@@ -157,7 +157,7 @@ pub fn set(ctx: &Ctx, slug: &str, key: &str, value: &str) -> Result<()> {
     }
     if key == "name" {
         // The priming file names the project.
-        let _ = project::write_priming(&project, &crate::coordinator::current_prefix(&ctx.root)?);
+        project::write_priming(&project, &crate::coordinator::current_prefix(&ctx.root)?)?;
     }
     println!("{slug}: {key} = {value}");
     Ok(())
@@ -192,10 +192,21 @@ pub fn is_text(path: &Path) -> bool {
     !buf[..n].contains(&0)
 }
 
+/// `VISUAL` / `EDITOR` are trusted shell fragments, including any arguments.
+/// An existing executable path is invoked literally, even with spaces or quotes.
+fn editor_command(editor: Option<&str>, path: &str) -> String {
+    match editor {
+        Some(editor) if Path::new(editor).is_file() => crate::remote::local_command(editor, &[path]),
+        Some(editor) => format!("{editor} {}", crate::remote::quote_local(path)),
+        None => crate::remote::local_command(if cfg!(windows) { "notepad.exe" } else { "vi" }, &[path]),
+    }
+}
+
 /// `open-file <path> [--workspace W]`: a text file opens in a new Herdr tab
-/// running `$EDITOR`; anything else with the system opener. No viewer.
+/// running `VISUAL` / `EDITOR` (default: `notepad.exe` on Windows, `vi` on Unix);
+/// anything else uses the system opener. No viewer.
 pub fn open_file(ctx: &Ctx, path: &Path, workspace: Option<&str>) -> Result<()> {
-    let path = std::fs::canonicalize(path).with_context(|| format!("{} does not exist", path.display()))?;
+    let path = crate::paths::canonicalize(path).with_context(|| format!("{} does not exist", path.display()))?;
     if path.is_dir() || !is_text(&path) {
         return system_open(ctx, &path.to_string_lossy());
     }
@@ -211,8 +222,8 @@ pub fn open_file(ctx: &Ctx, path: &Path, workspace: Option<&str>) -> Result<()> 
     }
     let created = herdr.call(&args, crate::herdr::CALL_TIMEOUT).map_err(|e| anyhow::anyhow!("{e}"))?;
     let pane = created["root_pane"]["pane_id"].as_str().context("herdr's tab reply has no pane")?.to_string();
-    let editor = ctx.env.var("VISUAL").or(ctx.env.var("EDITOR")).unwrap_or("vi");
-    let command = format!("{editor} {}", crate::remote::quote(&path.to_string_lossy()));
+    let editor = ctx.env.var("VISUAL").or(ctx.env.var("EDITOR"));
+    let command = editor_command(editor, &path.to_string_lossy());
     // A fresh pane's shell needs a moment before it takes input.
     std::thread::sleep(std::time::Duration::from_millis(300));
     herdr.call(&["pane", "run", &pane, &command], crate::herdr::CALL_TIMEOUT).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -220,10 +231,17 @@ pub fn open_file(ctx: &Ctx, path: &Path, workspace: Option<&str>) -> Result<()> 
     Ok(())
 }
 
-/// A URL or a non-text file with the system opener (`open` / `xdg-open`).
+/// Opens a URL or non-text file with PowerShell `Start-Process` on Windows,
+/// `open` on macOS, or `xdg-open` on other Unix systems.
 pub fn system_open(ctx: &Ctx, target: &str) -> Result<()> {
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    let out = ctx.runner.run(&crate::runner::Cmd::new(opener, std::time::Duration::from_secs(10)).arg(target))?;
+    let opener = if cfg!(windows) { "pwsh.exe" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let command = crate::runner::Cmd::new(opener, std::time::Duration::from_secs(10));
+    let command = if cfg!(windows) {
+        command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &format!("Start-Process -FilePath {}", crate::remote::quote_local(target))])
+    } else {
+        command.arg(target)
+    };
+    let out = ctx.runner.run(&command)?;
     if !out.success() {
         bail!("{opener} {target}: {}", out.error_text());
     }
@@ -242,6 +260,104 @@ pub fn repos_text(settings: &Settings) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_paths_and_trusted_fragments_pass_hostile_filenames_literally() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("editor's O’Connor folder");
+        std::fs::create_dir(&dir).unwrap();
+        let script = dir.join(if cfg!(windows) { "editor's O’Connor tool.ps1" } else { "editor's O’Connor tool.sh" });
+        let received = root.path().join("received.txt");
+        let received_text = received.to_string_lossy();
+        let body = if cfg!(windows) {
+            format!("[IO.File]::WriteAllLines({}, [string[]]$args)", crate::remote::quote_local(&received_text))
+        } else {
+            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n", crate::remote::quote(&received_text))
+        };
+        std::fs::write(&script, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let target = root.path().join("notes '‘’‚‛ ; mkdir injected ; $(mkdir injected) #.txt");
+        std::fs::write(&target, "text").unwrap();
+        let script_text = script.to_string_lossy();
+        let target_text = target.to_string_lossy();
+        let fragment = crate::remote::local_command(&script_text, &["trusted prefix"]);
+        for (editor, expected) in [
+            (script_text.as_ref(), vec![target_text.as_ref()]),
+            (fragment.as_str(), vec!["trusted prefix", target_text.as_ref()]),
+        ] {
+            let command = editor_command(Some(editor), &target_text);
+            let cmd = if cfg!(windows) {
+                crate::runner::Cmd::new("pwsh.exe", std::time::Duration::from_secs(10))
+                    .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &command])
+            } else {
+                crate::runner::Cmd::new("sh", std::time::Duration::from_secs(10)).args(["-c", &command])
+            }.cwd(root.path());
+            let out = crate::runner::Runner::run(&crate::runner::RealRunner, &cmd).unwrap();
+            assert!(out.success(), "{}", out.error_text());
+            let actual = std::fs::read_to_string(&received).unwrap();
+            assert_eq!(actual.lines().collect::<Vec<_>>(), expected);
+            assert!(!root.path().join("injected").exists());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn system_opener_preserves_smart_quotes_without_launching_gui_or_path_statements() {
+        use crate::runner::{RealRunner, Runner};
+        let root = tempfile::tempdir().unwrap();
+        let received = root.path().join("received.txt");
+        let capture = received.to_string_lossy().into_owned();
+        let cwd = root.path().to_path_buf();
+        let env = crate::paths::Env::for_test(root.path(), &[]);
+        let runner = crate::runner::fake::FakeRunner::new();
+        runner.on_fn(
+            |cmd| cmd.program == "pwsh.exe",
+            move |cmd| {
+                // Replace only the GUI boundary; the generated command is parsed
+                // and its FilePath parameter is bound by real PowerShell.
+                let mut cmd = cmd.clone().env("HP_OPEN_TARGET", &capture).cwd(&cwd);
+                let script = cmd.args.last_mut().unwrap();
+                *script = format!(
+                    "function Start-Process {{ param([string]$FilePath) [IO.File]::WriteAllText($env:HP_OPEN_TARGET, $FilePath, [Text.UTF8Encoding]::new($false)) }}\n{script}"
+                );
+                RealRunner.run(&cmd)
+            },
+        );
+        let ctx = Ctx { env: &env, root: root.path().to_path_buf(), config_dir: root.path().join("cfg"), runner: &runner, detached_ticker: false };
+        system_open(&ctx, "O’Connor").unwrap();
+        assert_eq!(std::fs::read(&received).unwrap(), "O’Connor".as_bytes());
+        for delimiter in ['\'', '\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}'] {
+            let target = format!("notes{delimiter}; Set-Content -LiteralPath injected -Value yes; #.txt");
+            system_open(&ctx, &target).unwrap();
+            assert_eq!(std::fs::read(&received).unwrap(), target.as_bytes());
+            assert!(!root.path().join("injected").exists(), "path data executed");
+        }
+    }
+
+    #[test]
+    fn renaming_reports_priming_conflicts_without_overwriting_user_files() {
+        let root = tempfile::tempdir().unwrap();
+        let project = project::create(root.path(), "demo", "", vec![]).unwrap();
+        let claude = project.dir().join("CLAUDE.md");
+        let backup = project.dir().join("CLAUDE.md.before-herdr-projects");
+        std::fs::write(&claude, "newer user instructions").unwrap();
+        std::fs::write(&backup, "older user instructions").unwrap();
+        let env = crate::paths::Env::for_test(root.path(), &[]);
+        let runner = crate::runner::fake::FakeRunner::new();
+        let ctx = Ctx { env: &env, root: root.path().to_path_buf(), config_dir: root.path().join("cfg"), runner: &runner, detached_ticker: false };
+        let error = set(&ctx, "demo", "name", "Renamed").unwrap_err().to_string();
+        assert!(error.contains(&claude.display().to_string()), "{error}");
+        assert!(error.contains(&backup.display().to_string()), "{error}");
+        assert!(error.contains("both files were preserved"), "{error}");
+        assert_eq!(std::fs::read_to_string(&claude).unwrap(), "newer user instructions");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "older user instructions");
+        let (settings, _) = project::parse_project_md(&std::fs::read_to_string(project.project_md()).unwrap()).unwrap();
+        assert_eq!(settings.name, "Renamed");
+    }
 
     const MD: &str = "+++\nname = \"Demo\" # the label\ngoal = \"\"\nmax_parallel_threads = 3\nnudge = false\n\n[[repos]]\npath = \"/srv/app\"\nmachine = \"box\"\n+++\n\n# Instructions\nBody with +++ inside\n";
 
