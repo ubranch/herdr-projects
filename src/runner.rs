@@ -172,11 +172,15 @@ impl Runner for RealRunner {
 
         // Readers and the writer run on their own threads so a full pipe in
         // either direction cannot deadlock against the deadline loop below.
-        let stdin_thread = child.stdin.take().zip(cmd.stdin.clone()).map(|(mut pipe, text)| {
-            std::thread::spawn(move || {
-                let _ = pipe.write_all(text.as_bytes());
-            })
-        });
+        let stdin_thread = child
+            .stdin
+            .take()
+            .zip(cmd.stdin.clone())
+            .map(|(mut pipe, text)| {
+                std::thread::spawn(move || {
+                    let _ = pipe.write_all(text.as_bytes());
+                })
+            });
         let stdout_thread = child.stdout.take().map(read_all);
         let stderr_thread = child.stderr.take().map(read_all);
 
@@ -228,7 +232,8 @@ impl Runner for RealRunner {
         if let Some(cwd) = &cmd.cwd {
             // This process leads the pane's foreground group, and Herdr reports
             // the leader's directory as the pane's `foreground_cwd`: it moves too.
-            std::env::set_current_dir(cwd).with_context(|| format!("could not enter {}", cwd.display()))?;
+            std::env::set_current_dir(cwd)
+                .with_context(|| format!("could not enter {}", cwd.display()))?;
             command.current_dir(cwd);
         }
         let mut child = command
@@ -303,7 +308,10 @@ impl IgnoreInterrupts {
         // A handler is local to this process: the already-spawned agent still
         // receives Ctrl-C/Ctrl-Break. Detached processes have no console.
         Self(unsafe {
-            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(ignore_console_interrupt), 1) != 0
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(
+                Some(ignore_console_interrupt),
+                1,
+            ) != 0
         })
     }
 }
@@ -313,7 +321,10 @@ impl Drop for IgnoreInterrupts {
     fn drop(&mut self) {
         if self.0 {
             unsafe {
-                windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(ignore_console_interrupt), 0);
+                windows_sys::Win32::System::Console::SetConsoleCtrlHandler(
+                    Some(ignore_console_interrupt),
+                    0,
+                );
             }
         }
     }
@@ -373,30 +384,45 @@ impl WindowsPipe {
         use std::os::windows::io::FromRawHandle;
         // One manual-reset event is reused by the sequential reads and writes.
         let event = unsafe {
-            windows_sys::Win32::System::Threading::CreateEventW(std::ptr::null(), 1, 0, std::ptr::null())
+            windows_sys::Win32::System::Threading::CreateEventW(
+                std::ptr::null(),
+                1,
+                0,
+                std::ptr::null(),
+            )
         };
         if event.is_null() {
             return Err(std::io::Error::last_os_error());
         }
-        Ok(Self { file, event: unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(event) }, deadline })
+        Ok(Self {
+            file,
+            event: unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(event) },
+            deadline,
+        })
     }
 
     fn transfer(&mut self, buffer: *mut u8, len: usize, write: bool) -> std::io::Result<usize> {
         use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_IO_PENDING, WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::Foundation::{
+            ERROR_BROKEN_PIPE, ERROR_IO_PENDING, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        };
         use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
         use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
         use windows_sys::Win32::System::Threading::{ResetEvent, WaitForSingleObject};
         if len == 0 {
             return Ok(0);
         }
-        let timeout = || std::io::Error::new(std::io::ErrorKind::TimedOut, "Herdr pipe request timed out");
+        let timeout =
+            || std::io::Error::new(std::io::ErrorKind::TimedOut, "Herdr pipe request timed out");
         if Instant::now() >= self.deadline {
             return Err(timeout());
         }
         let handle = self.file.as_raw_handle();
         let event = self.event.as_raw_handle();
-        let mut operation = OVERLAPPED { hEvent: event, ..Default::default() };
+        let mut operation = OVERLAPPED {
+            hEvent: event,
+            ..Default::default()
+        };
         let mut count = 0;
         let len = len.min(u32::MAX as usize) as u32;
         // SAFETY: both handles are owned here. The buffer and OVERLAPPED remain
@@ -418,11 +444,18 @@ impl WindowsPipe {
                 if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
                     return Err(error);
                 }
-                let millis = self.deadline.saturating_duration_since(Instant::now()).as_millis()
+                let millis = self
+                    .deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis()
                     .min((u32::MAX - 1) as u128) as u32;
                 let wait = WaitForSingleObject(event, millis);
                 if wait != WAIT_OBJECT_0 {
-                    let error = if wait == WAIT_TIMEOUT { timeout() } else { std::io::Error::last_os_error() };
+                    let error = if wait == WAIT_TIMEOUT {
+                        timeout()
+                    } else {
+                        std::io::Error::last_os_error()
+                    };
                     CancelIoEx(handle, &operation);
                     // Cancellation is asynchronous. Reap it before releasing
                     // the operation or its caller's buffer.
@@ -516,12 +549,13 @@ pub mod fake {
     use std::cell::RefCell;
 
     type Matcher = Box<dyn Fn(&Cmd) -> bool>;
+    type Answer = Box<dyn Fn(&Cmd) -> Result<Output>>;
 
     /// A scripted runner: the first rule whose matcher accepts the command
     /// answers it. Every command is recorded, matched or not.
     #[derive(Default)]
     pub struct FakeRunner {
-        rules: RefCell<Vec<(Matcher, Box<dyn Fn(&Cmd) -> Result<Output>>)>>,
+        rules: RefCell<Vec<(Matcher, Answer)>>,
         pub calls: RefCell<Vec<Cmd>>,
         /// (socket, request line) of every socket request.
         pub socket_requests: RefCell<Vec<(PathBuf, String)>>,
@@ -597,7 +631,9 @@ pub mod fake {
         }
 
         fn socket_request(&self, socket: &Path, line: &str, _timeout: Duration) -> Result<String> {
-            self.socket_requests.borrow_mut().push((socket.to_path_buf(), line.to_string()));
+            self.socket_requests
+                .borrow_mut()
+                .push((socket.to_path_buf(), line.to_string()));
             Ok(r#"{"id":"hp","result":{"type":"agent_view","active":true}}"#.to_string())
         }
 
@@ -626,9 +662,13 @@ mod tests {
     #[test]
     fn captures_output_and_exit_code() {
         #[cfg(unix)]
-        let cmd = Cmd::new("sh", Duration::from_secs(5)).args(["-c", "echo hi; echo err >&2; exit 3"]);
+        let cmd =
+            Cmd::new("sh", Duration::from_secs(5)).args(["-c", "echo hi; echo err >&2; exit 3"]);
         #[cfg(windows)]
-        let cmd = powershell("[Console]::Out.Write(\"hi`n\"); [Console]::Error.Write(\"err`n\"); exit 3", Duration::from_secs(10));
+        let cmd = powershell(
+            "[Console]::Out.Write(\"hi`n\"); [Console]::Error.Write(\"err`n\"); exit 3",
+            Duration::from_secs(10),
+        );
         let out = RealRunner.run(&cmd).unwrap();
         assert_eq!(out.code, Some(3));
         assert_eq!(out.stdout, "hi\n");
@@ -641,7 +681,10 @@ mod tests {
         #[cfg(unix)]
         let cmd = Cmd::new("cat", Duration::from_secs(5));
         #[cfg(windows)]
-        let cmd = powershell("[Console]::Out.Write([Console]::In.ReadToEnd())", Duration::from_secs(10));
+        let cmd = powershell(
+            "[Console]::Out.Write([Console]::In.ReadToEnd())",
+            Duration::from_secs(10),
+        );
         let out = RealRunner.run(&cmd.stdin("hello")).unwrap();
         assert_eq!(out.stdout, "hello");
     }
@@ -661,7 +704,10 @@ mod tests {
         #[cfg(unix)]
         let cmd = Cmd::new("yes", Duration::from_millis(300));
         #[cfg(windows)]
-        let cmd = powershell("$chunk = 'x' * 8192; while ($true) { [Console]::Out.Write($chunk) }", Duration::from_secs(3));
+        let cmd = powershell(
+            "$chunk = 'x' * 8192; while ($true) { [Console]::Out.Write($chunk) }",
+            Duration::from_secs(3),
+        );
         let start = Instant::now();
         let out = RealRunner.run(&cmd).unwrap();
         assert!(out.timed_out);
@@ -692,7 +738,13 @@ mod tests {
 
     #[cfg(windows)]
     fn powershell(script: &str, timeout: Duration) -> Cmd {
-        Cmd::new("powershell.exe", timeout).args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
+        Cmd::new("powershell.exe", timeout).args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ])
     }
 
     #[cfg(windows)]
@@ -708,8 +760,10 @@ mod tests {
         const FIXTURE_DIR: &str = "HERDR_PROJECTS_RUNNER_TREE_FIXTURE_DIR";
         const FIXTURE_LEAF: &str = "HERDR_PROJECTS_RUNNER_TREE_FIXTURE_LEAF";
         const FIXTURE_ARGS: [&str; 4] = [
-            "--exact", "runner::tests::group_kill_reaches_grandchildren",
-            "--nocapture", "--test-threads=1",
+            "--exact",
+            "runner::tests::group_kill_reaches_grandchildren",
+            "--nocapture",
+            "--test-threads=1",
         ];
 
         fn creation_time(handle: HANDLE) -> u64 {
@@ -717,8 +771,14 @@ mod tests {
             let mut exited = FILETIME::default();
             let mut kernel = FILETIME::default();
             let mut user = FILETIME::default();
-            assert_ne!(unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) }, 0,
-                "could not identify fixture process: {}", std::io::Error::last_os_error());
+            assert_ne!(
+                unsafe {
+                    GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user)
+                },
+                0,
+                "could not identify fixture process: {}",
+                std::io::Error::last_os_error()
+            );
             (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)
         }
 
@@ -727,7 +787,11 @@ mod tests {
             let dir = PathBuf::from(dir);
             if std::env::var_os(FIXTURE_LEAF).is_some() {
                 let starting = dir.join("starting");
-                let identity = format!("{} {}", std::process::id(), creation_time(unsafe { GetCurrentProcess() }));
+                let identity = format!(
+                    "{} {}",
+                    std::process::id(),
+                    creation_time(unsafe { GetCurrentProcess() })
+                );
                 std::fs::write(&starting, identity).unwrap();
                 std::fs::rename(starting, dir.join("ready")).unwrap();
                 // Bound an orphan's lifetime even if the test itself panics.
@@ -739,7 +803,10 @@ mod tests {
                     .args(FIXTURE_ARGS)
                     .env(FIXTURE_LEAF, "1")
                     .stdin(Stdio::null())
-                    .spawn().unwrap().wait().unwrap();
+                    .spawn()
+                    .unwrap()
+                    .wait()
+                    .unwrap();
             }
             return;
         }
@@ -753,7 +820,10 @@ mod tests {
                         // Cleanup only this retained process object, never a
                         // name or a PID that Windows could have reused.
                         if TerminateProcess(handle, 1) == 0 {
-                            eprintln!("fixture cleanup failed: {}", std::io::Error::last_os_error());
+                            eprintln!(
+                                "fixture cleanup failed: {}",
+                                std::io::Error::last_os_error()
+                            );
                         } else if WaitForSingleObject(handle, 5000) != WAIT_OBJECT_0 {
                             eprintln!("fixture cleanup did not finish within 5 seconds");
                         }
@@ -768,20 +838,25 @@ mod tests {
             std::env::current_exe().unwrap().to_str().unwrap(),
             Duration::from_secs(3),
         )
-            .args(FIXTURE_ARGS)
-            .env(FIXTURE_DIR, dir.path().to_str().unwrap())
-            .env_remove(FIXTURE_LEAF)
-            .own_group();
+        .args(FIXTURE_ARGS)
+        .env(FIXTURE_DIR, dir.path().to_str().unwrap())
+        .env_remove(FIXTURE_LEAF)
+        .own_group();
         let start = Instant::now();
         let deadline = start + Duration::from_secs(8);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
-            scope.spawn(|| { let _ = tx.send(RealRunner.run(&cmd)); });
+            scope.spawn(|| {
+                let _ = tx.send(RealRunner.run(&cmd));
+            });
             while !ready.exists() {
                 if let Ok(out) = rx.try_recv() {
                     panic!("native descendant was not ready before Runner returned: {out:?}");
                 }
-                assert!(Instant::now() < deadline, "native descendant readiness timed out");
+                assert!(
+                    Instant::now() < deadline,
+                    "native descendant readiness timed out"
+                );
                 std::thread::sleep(POLL);
             }
             let identity = std::fs::read_to_string(&ready).unwrap();
@@ -789,29 +864,51 @@ mod tests {
             let pid = pid.parse::<u32>().unwrap();
             let created = created.parse::<u64>().unwrap();
             let handle = unsafe {
-                OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+                OpenProcess(
+                    PROCESS_SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+                    0,
+                    pid,
+                )
             };
-            assert!(!handle.is_null(), "could not open descendant {pid}: {}", std::io::Error::last_os_error());
+            assert!(
+                !handle.is_null(),
+                "could not open descendant {pid}: {}",
+                std::io::Error::last_os_error()
+            );
             let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
             // Validate identity before allowing cleanup to terminate the handle.
-            assert_eq!(creation_time(handle.as_raw_handle()), created, "descendant PID {pid} was reused");
+            assert_eq!(
+                creation_time(handle.as_raw_handle()),
+                created,
+                "descendant PID {pid} was reused"
+            );
             let descendant = Descendant(handle);
-            assert_eq!(unsafe { WaitForSingleObject(descendant.0.as_raw_handle(), 0) }, WAIT_TIMEOUT,
-                "descendant {pid} was not alive before the timeout");
-            let out = rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .expect("Runner did not close descendant-held pipes within 8 seconds").unwrap();
+            assert_eq!(
+                unsafe { WaitForSingleObject(descendant.0.as_raw_handle(), 0) },
+                WAIT_TIMEOUT,
+                "descendant {pid} was not alive before the timeout"
+            );
+            let out = rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("Runner did not close descendant-held pipes within 8 seconds")
+                .unwrap();
             assert!(out.timed_out);
             assert!(!out.success());
             assert!(start.elapsed() < Duration::from_secs(8));
-            assert_eq!(unsafe { WaitForSingleObject(descendant.0.as_raw_handle(), 0) }, WAIT_OBJECT_0,
-                "grandchild {pid} outlived the tree kill");
+            assert_eq!(
+                unsafe { WaitForSingleObject(descendant.0.as_raw_handle(), 0) },
+                WAIT_OBJECT_0,
+                "grandchild {pid} outlived the tree kill"
+            );
         });
     }
 
     #[test]
     fn timeout_closes_unconsumed_stdin() {
         #[cfg(unix)]
-        let cmd = Cmd::new("sh", Duration::from_millis(300)).args(["-c", "sleep 10"]).own_group();
+        let cmd = Cmd::new("sh", Duration::from_millis(300))
+            .args(["-c", "sleep 10"])
+            .own_group();
         #[cfg(windows)]
         let cmd = powershell("Start-Sleep -Seconds 10", Duration::from_millis(300)).own_group();
         let start = Instant::now();
@@ -821,28 +918,53 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn pipe_server(handler: impl FnOnce(&mut WindowsPipe) + Send + 'static) -> (tempfile::TempDir, PathBuf, std::thread::JoinHandle<()>) {
-        use std::os::windows::{ffi::OsStrExt, io::{AsRawHandle, FromRawHandle}};
-        use windows_sys::Win32::Foundation::{ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
+    fn pipe_server(
+        handler: impl FnOnce(&mut WindowsPipe) + Send + 'static,
+    ) -> (tempfile::TempDir, PathBuf, std::thread::JoinHandle<()>) {
+        use std::os::windows::{
+            ffi::OsStrExt,
+            io::{AsRawHandle, FromRawHandle},
+        };
+        use windows_sys::Win32::Foundation::{
+            ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+        };
         use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX};
         use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
-        use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, PIPE_TYPE_BYTE, PIPE_WAIT};
+        use windows_sys::Win32::System::Pipes::{
+            ConnectNamedPipe, CreateNamedPipeW, PIPE_TYPE_BYTE, PIPE_WAIT,
+        };
         use windows_sys::Win32::System::Threading::WaitForSingleObject;
         let dir = tempfile::tempdir().unwrap();
-        let socket = crate::paths::canonicalize(dir.path()).unwrap().join("herdr.sock");
+        let socket = crate::paths::canonicalize(dir.path())
+            .unwrap()
+            .join("herdr.sock");
         // The marker is not an address and must never be parsed by the client.
         std::fs::write(&socket, format!("{}:123456789", std::process::id())).unwrap();
         let name: Vec<u16> = std::ffi::OsStr::new(&format!(r"\\.\pipe\{}", socket.display()))
-            .encode_wide().chain(Some(0)).collect();
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
         let handle = unsafe {
-            CreateNamedPipeW(name.as_ptr(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
-                PIPE_TYPE_BYTE | PIPE_WAIT, 1, 4096, 4096, 0, std::ptr::null())
+            CreateNamedPipeW(
+                name.as_ptr(),
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+                PIPE_TYPE_BYTE | PIPE_WAIT,
+                1,
+                4096,
+                4096,
+                0,
+                std::ptr::null(),
+            )
         };
         assert_ne!(handle, INVALID_HANDLE_VALUE);
         let file = unsafe { std::fs::File::from_raw_handle(handle) };
-        let mut pipe = WindowsPipe::from_file(file, Instant::now() + Duration::from_secs(5)).unwrap();
+        let mut pipe =
+            WindowsPipe::from_file(file, Instant::now() + Duration::from_secs(5)).unwrap();
         let server = std::thread::spawn(move || {
-            let mut operation = OVERLAPPED { hEvent: pipe.event.as_raw_handle(), ..Default::default() };
+            let mut operation = OVERLAPPED {
+                hEvent: pipe.event.as_raw_handle(),
+                ..Default::default()
+            };
             let mut count = 0;
             unsafe {
                 if ConnectNamedPipe(pipe.file.as_raw_handle(), &mut operation) == 0 {
@@ -851,10 +973,23 @@ mod tests {
                         let wait = WaitForSingleObject(pipe.event.as_raw_handle(), 5000);
                         if wait != WAIT_OBJECT_0 {
                             CancelIoEx(pipe.file.as_raw_handle(), &operation);
-                            GetOverlappedResult(pipe.file.as_raw_handle(), &operation, &mut count, 1);
+                            GetOverlappedResult(
+                                pipe.file.as_raw_handle(),
+                                &operation,
+                                &mut count,
+                                1,
+                            );
                         }
                         assert_eq!(wait, WAIT_OBJECT_0, "test pipe connection timed out");
-                        assert_ne!(GetOverlappedResult(pipe.file.as_raw_handle(), &operation, &mut count, 0), 0);
+                        assert_ne!(
+                            GetOverlappedResult(
+                                pipe.file.as_raw_handle(),
+                                &operation,
+                                &mut count,
+                                0
+                            ),
+                            0
+                        );
                     } else {
                         assert_eq!(error, Some(ERROR_PIPE_CONNECTED as i32));
                     }
@@ -880,7 +1015,12 @@ mod tests {
             // and disconnects; closing a pipe can discard its unread bytes.
             let _ = pipe.read(&mut [0u8; 1]);
         });
-        let reply = socket_round_trip(&socket, r#"{"id":"hp","method":"ping"}"#, Duration::from_secs(3)).unwrap();
+        let reply = socket_round_trip(
+            &socket,
+            r#"{"id":"hp","method":"ping"}"#,
+            Duration::from_secs(3),
+        )
+        .unwrap();
         assert_eq!(reply, "{\"id\":\"hp\",\"result\":\"pong\"}\n");
         server.join().unwrap();
     }
@@ -897,14 +1037,22 @@ mod tests {
         });
         let start = Instant::now();
         let error = socket_round_trip(&socket, "{}", Duration::from_millis(100)).unwrap_err();
-        assert_eq!(error.downcast_ref::<std::io::Error>().unwrap().kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::TimedOut
+        );
         assert!(start.elapsed() < Duration::from_secs(1));
         server.join().unwrap();
 
-        let (_dir, socket, server) = pipe_server(|_| std::thread::sleep(Duration::from_millis(300)));
+        let (_dir, socket, server) =
+            pipe_server(|_| std::thread::sleep(Duration::from_millis(300)));
         let start = Instant::now();
-        let error = socket_round_trip(&socket, &"x".repeat(1_048_576), Duration::from_millis(100)).unwrap_err();
-        assert_eq!(error.downcast_ref::<std::io::Error>().unwrap().kind(), std::io::ErrorKind::TimedOut);
+        let error = socket_round_trip(&socket, &"x".repeat(1_048_576), Duration::from_millis(100))
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::TimedOut
+        );
         assert!(start.elapsed() < Duration::from_secs(1));
         server.join().unwrap();
     }

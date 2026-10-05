@@ -3,8 +3,30 @@
 //! (herdr.dev, "Native agent session restore", 0.9.1).
 
 pub const KINDS: [&str; 24] = [
-    "pi", "claude", "codex", "gemini", "cursor", "devin", "agy", "cline", "omp", "mastracode", "opencode", "copilot", "kimi", "kiro", "droid",
-    "amp", "grok", "hermes", "kilo", "qodercli", "qwen", "letta", "maki", "muse",
+    "pi",
+    "claude",
+    "codex",
+    "gemini",
+    "cursor",
+    "devin",
+    "agy",
+    "cline",
+    "omp",
+    "mastracode",
+    "opencode",
+    "copilot",
+    "kimi",
+    "kiro",
+    "droid",
+    "amp",
+    "grok",
+    "hermes",
+    "kilo",
+    "qodercli",
+    "qwen",
+    "letta",
+    "maki",
+    "muse",
 ];
 
 pub fn is_kind(kind: &str) -> bool {
@@ -18,7 +40,9 @@ pub fn resume_args(kind: &str, id: &str) -> Option<Vec<String>> {
         return None;
     }
     let args: Vec<String> = match kind {
-        "claude" | "cursor" | "grok" | "devin" | "droid" | "qodercli" | "qwen" | "hermes" => vec!["--resume".into(), id.into()],
+        "claude" | "cursor" | "grok" | "devin" | "droid" | "qodercli" | "qwen" | "hermes" => {
+            vec!["--resume".into(), id.into()]
+        }
         "codex" => vec!["resume".into(), id.into()],
         "omp" | "copilot" => vec![format!("--resume={id}")],
         "pi" | "opencode" | "kimi" | "kilo" => vec!["--session".into(), id.into()],
@@ -35,7 +59,9 @@ fn is_model_name(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && !value.starts_with('-')
-        && value.chars().all(|c| c.is_ascii_alphanumeric() || "._-/:@+[]".contains(c))
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-/:@+[]".contains(c))
 }
 
 /// Splits a thread's or coordinator's `--agent-arg` values into the model
@@ -75,23 +101,57 @@ mod tests {
     #[test]
     fn agent_args_carry_only_a_model_flag() {
         for kind in ["claude", "codex", "gemini", "opencode", "cursor", "copilot"] {
-            for args in [&["--model", "opus"][..], &["--model=gpt-5.5"], &["--model", "anthropic/claude-sonnet-5"], &["--model", "claude-opus-5-5[1m]"], &[]] {
-                assert_eq!(split_model_args(kind, &strings(args)), (strings(args), vec![]), "{kind} {args:?}");
+            for args in [
+                &["--model", "opus"][..],
+                &["--model=gpt-5.5"],
+                &["--model", "anthropic/claude-sonnet-5"],
+                &["--model", "claude-opus-5-5[1m]"],
+                &[],
+            ] {
+                assert_eq!(
+                    split_model_args(kind, &strings(args)),
+                    (strings(args), vec![]),
+                    "{kind} {args:?}"
+                );
             }
         }
-        assert_eq!(split_model_args("codex", &strings(&["-m", "gpt-5.5"])), (strings(&["-m", "gpt-5.5"]), vec![]));
-        assert_eq!(split_model_args("claude", &strings(&["-m", "opus"])), (vec![], strings(&["-m", "opus"])));
+        assert_eq!(
+            split_model_args("codex", &strings(&["-m", "gpt-5.5"])),
+            (strings(&["-m", "gpt-5.5"]), vec![])
+        );
+        assert_eq!(
+            split_model_args("claude", &strings(&["-m", "opus"])),
+            (vec![], strings(&["-m", "opus"]))
+        );
 
         let refused = |args: &[&str]| split_model_args("claude", &strings(args));
-        assert_eq!(refused(&["--dangerously-skip-permissions"]), (vec![], strings(&["--dangerously-skip-permissions"])));
-        assert_eq!(split_model_args("codex", &strings(&["--yolo"])), (vec![], strings(&["--yolo"])));
+        assert_eq!(
+            refused(&["--dangerously-skip-permissions"]),
+            (vec![], strings(&["--dangerously-skip-permissions"]))
+        );
+        assert_eq!(
+            split_model_args("codex", &strings(&["--yolo"])),
+            (vec![], strings(&["--yolo"]))
+        );
         assert_eq!(refused(&["--model"]), (vec![], strings(&["--model"])));
-        assert_eq!(refused(&["--model", "--foo"]), (vec![], strings(&["--model", "--foo"])));
-        assert_eq!(refused(&["--model", "x", "--extra"]), (strings(&["--model", "x"]), strings(&["--extra"])));
+        assert_eq!(
+            refused(&["--model", "--foo"]),
+            (vec![], strings(&["--model", "--foo"]))
+        );
+        assert_eq!(
+            refused(&["--model", "x", "--extra"]),
+            (strings(&["--model", "x"]), strings(&["--extra"]))
+        );
         assert_eq!(refused(&["--model="]), (vec![], strings(&["--model="])));
         assert_eq!(refused(&["--model=-x"]), (vec![], strings(&["--model=-x"])));
-        assert_eq!(refused(&["--model", "a b"]), (vec![], strings(&["--model", "a b"])));
-        assert_eq!(refused(&["--model", "$(id)"]), (vec![], strings(&["--model", "$(id)"])));
+        assert_eq!(
+            refused(&["--model", "a b"]),
+            (vec![], strings(&["--model", "a b"]))
+        );
+        assert_eq!(
+            refused(&["--model", "$(id)"]),
+            (vec![], strings(&["--model", "$(id)"]))
+        );
         assert_eq!(refused(&["opus"]), (vec![], strings(&["opus"])));
     }
 
@@ -99,7 +159,10 @@ mod tests {
     fn resume_arguments_follow_herdrs_table() {
         assert_eq!(resume_args("claude", "abc").unwrap(), ["--resume", "abc"]);
         assert_eq!(resume_args("codex", "abc").unwrap(), ["resume", "abc"]);
-        assert_eq!(resume_args("opencode", "abc").unwrap(), ["--session", "abc"]);
+        assert_eq!(
+            resume_args("opencode", "abc").unwrap(),
+            ["--session", "abc"]
+        );
         assert_eq!(resume_args("copilot", "abc").unwrap(), ["--resume=abc"]);
         assert_eq!(resume_args("gemini", "abc"), None);
         assert_eq!(resume_args("claude", ""), None);

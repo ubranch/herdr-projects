@@ -4,7 +4,7 @@ Install the plugin, run `configure` once, create a project, and talk to its coor
 
 ## 1. Check the prerequisites
 
-- macOS/Linux with [Herdr](https://herdr.dev) 0.9.1 or newer, or native Windows x64 (exercised with Herdr 0.9.3). Check `herdr status`: both the client and the running server must meet the requirement. After `herdr update`, restart an already-running server; otherwise `herdr plugin link` or `install` can fail with `plugin_requires_newer_herdr`. On Windows, install PowerShell 7 (`pwsh.exe`) and use it as Herdr's session shell.
+- macOS/Linux with [Herdr](https://herdr.dev) 0.9.1 or newer, or native Windows x64 (exercised with Herdr 0.9.3). Check `herdr status`: both the client and the running server must meet the requirement. An already-running server retains its old version after `herdr update`; defer plugin installation if `herdr plugin link` or `install` reports `plugin_requires_newer_herdr`, rather than interrupting active sessions. On Windows, install PowerShell 7 (`pwsh.exe`) and use it as Herdr's session shell.
 - To build from source: Rust/Cargo 1.89 or newer and a C compiler. Windows currently requires the `x86_64-pc-windows-msvc` Rust toolchain and Visual Studio C++ Build Tools with a Windows SDK; no Windows binary is published for this fork yet. Existing macOS/Linux releases carry arm64 and x86_64 binaries, so most Unix installs need neither. On macOS, `xcode-select --install` installs Apple's build tools. Install Rust with [rustup](https://rustup.rs).
 - Git.
 - An installed, signed-in agent CLI Herdr can start, on `PATH` (`claude`, `codex`, `opencode`, `oh-my-pi` and more). Claude Code is the one exercised most on Unix; a native Windows coordinator has run with oh-my-pi 18.5.1 using the user's existing model, auth and skills. Every agent that can run a shell command reports its own progress: thread briefs and the coordinator skill carry the instructions. `configure` also installs hooks for Claude Code, Codex, Droid, Gemini CLI and Copilot CLI, which add a reminder about once a minute.
@@ -29,20 +29,32 @@ export PATH="$HOME/.local/bin:$PATH"
 herdr-projects doctor
 ```
 
-### Native Windows x64: this checkout
+### Native Windows x64: fork main
 
-The [ubranch fork](https://github.com/ubranch/herdr-projects) has no published Windows asset, and the local `feat/windows-port` branch has not been pushed. Use the checkout containing this port; cloning a remote branch or installing the upstream plugin does not install these changes. `herdr plugin link` registers a checkout but does not build it.
+The Windows port and sync workflow are published on [`ubranch/herdr-projects`'s `main`](https://github.com/ubranch/herdr-projects/tree/main), but this fork has no published Windows release asset yet. Use fork `main`, not upstream `main` or an unmerged upstream Windows PR. The plugin is the compiled Rust `herdr-projects.exe`; PowerShell scripts provide build/install/command-link glue, not a separate implementation. `herdr plugin link` registers a checkout but does not build it.
 
-In PowerShell 7, from the current checkout:
+For a new checkout, clone fork `main` into an unused directory:
 
 ```powershell
-Set-Location -LiteralPath 'C:\Projects\herdr-projects'
+git clone --branch main https://github.com/ubranch/herdr-projects.git C:\Projects\herdr-projects
+if ($LASTEXITCODE -ne 0) { throw 'Clone failed; do not continue.' }
+```
+
+Use a clean fork `main` checkout: `git branch --show-current` must print `main`, `git status --short` must be empty, and `git remote get-url origin` must name `ubranch/herdr-projects`. Preserve any development work in another checkout; do not reset it or switch it to upstream `main`.
+
+Run the following in PowerShell 7 only when deliberately installing/registering the plugin. For an existing installation, use [Updating](#updating) instead. Source-only formatting, linting and smoke checks do not need installation or changes to the ticker or existing Herdr sessions.
+
+```powershell
+Set-Location -LiteralPath 'C:\Projects\herdr-projects' -ErrorAction Stop
+git pull --ff-only origin main
+if ($LASTEXITCODE -ne 0) { throw 'Pull failed; preserve the checkout and do not install.' }
 $env:HERDR_PROJECTS_BUILD = 'source'
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 if ($LASTEXITCODE -ne 0) { throw 'Install failed; do not continue.' }
 herdr plugin link .
 if ($LASTEXITCODE -ne 0) { throw 'Plugin link failed; do not continue.' }
 & .\target\release\herdr-projects.exe doctor --fix
+if ($LASTEXITCODE -ne 0) { throw 'Installed, but doctor reported problems; read its output.' }
 ```
 
 The installer stages a locked Cargo release build, runs its `--version`, then replaces `target\release\herdr-projects.exe` by rename so it does not overwrite a running image. Failed build/validation leaves the installed binary alone; a failed replacement attempts rollback. When a matching Windows release exists, downloads must also match its unique `SHA256SUMS` entry and report the expected version before installation.
@@ -58,7 +70,7 @@ $env:Path = "$binDir;$env:Path"
 herdr-projects doctor
 ```
 
-For future shells, add `$binDir`'s resolved path to your **user Path** in Windows Environment Variables. Restart Herdr from a shell with `pwsh.exe`, Git, your agent CLI and the command directory on `PATH`; an already-running server retains its old environment.
+For future shells, add `$binDir`'s resolved path to your **user Path** in Windows Environment Variables. Start future Herdr sessions from a shell with `pwsh.exe`, Git, your agent CLI and the command directory on `PATH`; an already-running server retains its old environment. Leave existing Herdr sessions running.
 
 In Herdr's existing config (`%APPDATA%\herdr\config.toml` by default on Windows), set or update the existing terminal setting; do not replace the rest of your config:
 
@@ -140,19 +152,28 @@ herdr-projects ticker status
 
 ## Updating
 
-**Native Windows checkout:** `update` is release-driven and linked installs must be clean and on `main`. It is not a way to update the unpublished local `feat/windows-port` branch. To reinstall this checkout, stop the ticker with the installed binary, rerun the source installer, then use the new binary:
+**Native Windows fork checkout:** the port and sync workflow are published on `ubranch/herdr-projects`'s `main`, but there is no Windows release asset yet. `update` is release-driven; it does not pick up every fork-main source change, and a linked install must be clean and on `main`. Do not switch to upstream `main` to satisfy that guard.
+
+When deliberately updating the installed plugin, use the clean fork `main` checkout described [above](#native-windows-x64-fork-main), fast-forward it, then stop only the plugin ticker with the installed binary before replacing it. Leave Herdr sessions, coordinators and threads running. Do not run this installation/ticker restart procedure during source-only formatting, linting or smoke checks.
 
 ```powershell
+Set-Location -LiteralPath 'C:\Projects\herdr-projects' -ErrorAction Stop
+git pull --ff-only origin main
+if ($LASTEXITCODE -ne 0) { throw 'Pull failed; preserve the checkout and do not install.' }
 herdr-projects ticker stop
 if ($LASTEXITCODE -ne 0) { throw 'Ticker did not stop; do not replace the binary.' }
 $env:HERDR_PROJECTS_BUILD = 'source'
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 if ($LASTEXITCODE -ne 0) {
     herdr-projects ticker start
+    if ($LASTEXITCODE -ne 0) { throw 'Install failed and the ticker could not restart; read the errors before retrying.' }
     throw 'Install failed; read the installer error before retrying.'
 }
 & .\target\release\herdr-projects.exe doctor --fix
+$doctorExit = $LASTEXITCODE
 & .\target\release\herdr-projects.exe ticker start
+if ($LASTEXITCODE -ne 0) { throw 'Installed, but the ticker did not start; read its output.' }
+if ($doctorExit -ne 0) { throw 'Installed and ticker restarted, but doctor reported problems; read its output.' }
 ```
 
 Run this from the checkout. If an earlier Unix ticker is running when adopting this port, stop it **with the old binary before replacing it**: `.ticker.lock` is now a persistent lock token and readable metadata is in `.ticker.info`. Do not delete either ticker or project lock tokens to clear a stale status; status follows the held OS lock, not the presence of a file.
@@ -166,9 +187,9 @@ herdr-projects doctor --fix
 herdr-projects ticker start
 ```
 
-Herdr reinstalls the plugin in the same folder, and the plugin keeps your `~/.local/bin/herdr-projects` link pointing at it. If you linked a local checkout with `herdr plugin link` instead, run `git pull` and `sh scripts/install.sh` in it in place of the `herdr plugin install` line.
+Herdr reinstalls the plugin in the same folder, and the plugin keeps your `~/.local/bin/herdr-projects` link pointing at it. If you linked a local checkout with `herdr plugin link` instead, run `git pull --ff-only origin main` from a clean `main` checkout and `sh scripts/install.sh` in place of the `herdr plugin install` line.
 
-**From then on:**
+**From then on, for release-based macOS/Linux updates:**
 
 ```bash
 herdr-projects update           # fetch, install the new binary, doctor --fix, restart the ticker

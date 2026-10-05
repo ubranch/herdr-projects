@@ -39,7 +39,8 @@ pub fn valid_pr_url(url: &str) -> bool {
         !s.is_empty()
             && s != "."
             && s != ".."
-            && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     };
     parts.len() == 4
         && name_ok(parts[0])
@@ -64,7 +65,10 @@ pub struct Remote {
 /// never sends `gh` anywhere.
 pub fn parse_remote(origin: &str) -> Option<Remote> {
     let origin = origin.trim();
-    let (host, rest) = if let Some(rest) = origin.strip_prefix("https://").or_else(|| origin.strip_prefix("http://")) {
+    let (host, rest) = if let Some(rest) = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))
+    {
         let (authority, path) = rest.split_once('/')?;
         (authority.rsplit('@').next()?, path)
     } else if let Some(rest) = origin.strip_prefix("ssh://") {
@@ -79,13 +83,19 @@ pub fn parse_remote(origin: &str) -> Option<Remote> {
         return None;
     }
     let rest = rest.trim_end_matches('/');
-    let rest = rest.strip_suffix(".git").unwrap_or(rest).trim_end_matches('/');
+    let rest = rest
+        .strip_suffix(".git")
+        .unwrap_or(rest)
+        .trim_end_matches('/');
     let mut parts = rest.split('/');
     let (owner, repo) = (parts.next()?, parts.next()?);
     if owner.is_empty() || repo.is_empty() || parts.next().is_some() {
         return None;
     }
-    Some(Remote { host, repo: format!("{owner}/{repo}").to_lowercase() })
+    Some(Remote {
+        host,
+        repo: format!("{owner}/{repo}").to_lowercase(),
+    })
 }
 
 /// `owner/repo`, lower-cased, of a GitHub remote URL.
@@ -95,7 +105,9 @@ pub fn normalize_origin(origin: &str) -> Option<String> {
 
 /// The GitHub host of a remote URL; `github.com` when it names none.
 pub fn host_of(origin: &str) -> String {
-    parse_remote(origin).map(|r| r.host).unwrap_or_else(|| "github.com".into())
+    parse_remote(origin)
+        .map(|r| r.host)
+        .unwrap_or_else(|| "github.com".into())
 }
 
 /// `gh` for a repository on `host`. Off `github.com` (exe.dev VMs reach
@@ -103,13 +115,22 @@ pub fn host_of(origin: &str) -> String {
 /// alone; on `github.com` nothing is set.
 pub fn gh(host: &str) -> Cmd {
     let cmd = Cmd::new("gh", GH_TIMEOUT);
-    if host.is_empty() || host == "github.com" { cmd } else { cmd.env("GH_HOST", host) }
+    if host.is_empty() || host == "github.com" {
+        cmd
+    } else {
+        cmd.env("GH_HOST", host)
+    }
 }
 
 /// Check names and logins are attacker-chosen: cut to 80 characters and
 /// stripped of control characters and newlines before they are written.
 pub fn sanitize(name: &str) -> String {
-    name.chars().filter(|c| !c.is_control()).take(NAME_LIMIT).collect::<String>().trim().to_string()
+    name.chars()
+        .filter(|c| !c.is_control())
+        .take(NAME_LIMIT)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// What is kept of a pull request. No bodies, no titles.
@@ -186,26 +207,50 @@ pub fn reduce(json: &str, branch: &str, origin: &str) -> Result<Checked> {
         return Ok(Checked::Ignored("the thread has no branch".into()));
     }
     if view.head_ref_name != branch {
-        return Ok(Checked::Ignored("its head branch is not the thread's branch".into()));
+        return Ok(Checked::Ignored(
+            "its head branch is not the thread's branch".into(),
+        ));
     }
     let head = format!(
         "{}/{}",
-        view.head_repository_owner.map(|o| o.login).unwrap_or_default(),
+        view.head_repository_owner
+            .map(|o| o.login)
+            .unwrap_or_default(),
         view.head_repository.map(|r| r.name).unwrap_or_default()
     )
     .to_lowercase();
     if normalize_origin(origin).as_deref() != Some(head.as_str()) {
-        return Ok(Checked::Ignored("its head repository is not the thread's `origin`".into()));
+        return Ok(Checked::Ignored(
+            "its head repository is not the thread's `origin`".into(),
+        ));
     }
 
     let mut failing: Vec<String> = view
         .status_check_rollup
         .iter()
         .filter(|c| {
-            let result = if c.conclusion.is_empty() { &c.state } else { &c.conclusion };
-            matches!(result.to_ascii_uppercase().as_str(), "FAILURE" | "ERROR" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE")
+            let result = if c.conclusion.is_empty() {
+                &c.state
+            } else {
+                &c.conclusion
+            };
+            matches!(
+                result.to_ascii_uppercase().as_str(),
+                "FAILURE"
+                    | "ERROR"
+                    | "TIMED_OUT"
+                    | "CANCELLED"
+                    | "ACTION_REQUIRED"
+                    | "STARTUP_FAILURE"
+            )
         })
-        .map(|c| sanitize(if c.name.is_empty() { &c.context } else { &c.name }))
+        .map(|c| {
+            sanitize(if c.name.is_empty() {
+                &c.context
+            } else {
+                &c.name
+            })
+        })
         .filter(|name| !name.is_empty())
         .collect();
     failing.sort();
@@ -220,7 +265,12 @@ pub fn reduce(json: &str, branch: &str, origin: &str) -> Result<Checked> {
     commenters.sort();
     commenters.dedup();
     let mut activity = std::collections::BTreeMap::new();
-    for author in view.comments.iter().chain(view.reviews.iter()).filter_map(|c| c.author.as_ref()) {
+    for author in view
+        .comments
+        .iter()
+        .chain(view.reviews.iter())
+        .filter_map(|c| c.author.as_ref())
+    {
         let login = sanitize(&author.login);
         if !login.is_empty() {
             *activity.entry(login).or_insert(0) += 1;
@@ -241,8 +291,12 @@ pub fn reduce(json: &str, branch: &str, origin: &str) -> Result<Checked> {
 /// The login `gh` acts as on `origin`'s host: comments by it are the threads'
 /// own replies.
 pub fn own_login(runner: &dyn Runner, origin: &str) -> Option<String> {
-    let out = runner.run(&gh(&host_of(origin)).args(["api", "user", "--jq", ".login"])).ok()?;
-    out.success().then(|| sanitize(out.stdout.trim())).filter(|l| !l.is_empty())
+    let out = runner
+        .run(&gh(&host_of(origin)).args(["api", "user", "--jq", ".login"]))
+        .ok()?;
+    out.success()
+        .then(|| sanitize(out.stdout.trim()))
+        .filter(|l| !l.is_empty())
 }
 
 /// `gh pr view` of a pull request URL, asked through `origin`'s host. `gh`
@@ -257,9 +311,14 @@ pub fn view(runner: &dyn Runner, url: &str, origin: &str) -> Result<String> {
     let cmd = if host == "github.com" {
         gh(&host).args(["pr", "view", "--json", FIELDS, "--", url])
     } else {
-        let parts: Vec<&str> = url.trim_start_matches("https://github.com/").split('/').collect();
+        let parts: Vec<&str> = url
+            .trim_start_matches("https://github.com/")
+            .split('/')
+            .collect();
         let repo = format!("{}/{}", parts[0], parts[1]);
-        gh(&host).args(["pr", "view", "--json", FIELDS, "--repo", &repo, "--", parts[3]])
+        gh(&host).args([
+            "pr", "view", "--json", FIELDS, "--repo", &repo, "--", parts[3],
+        ])
     };
     let out = runner.run(&cmd)?;
     if !out.success() {
@@ -312,7 +371,11 @@ pub fn find_by_branch(runner: &dyn Runner, origin: &str, branch: &str) -> Result
         "MERGED" => 1,
         _ => 2,
     };
-    listed.sort_by(|a, b| rank(&a.state).cmp(&rank(&b.state)).then_with(|| b.created_at.cmp(&a.created_at)));
+    listed.sort_by(|a, b| {
+        rank(&a.state)
+            .cmp(&rank(&b.state))
+            .then_with(|| b.created_at.cmp(&a.created_at))
+    });
     Ok(listed.into_iter().next().map(|p| p.url))
 }
 
@@ -327,7 +390,12 @@ pub fn describe_change(old: Option<&Summary>, new: &Summary) -> String {
     }
     parts.push(format!("{} comment(s)", new.comment_count));
     let known: &[String] = old.map(|o| o.commenters.as_slice()).unwrap_or(&[]);
-    let fresh: Vec<&str> = new.commenters.iter().filter(|c| !known.contains(c)).map(String::as_str).collect();
+    let fresh: Vec<&str> = new
+        .commenters
+        .iter()
+        .filter(|c| !known.contains(c))
+        .map(String::as_str)
+        .collect();
     if !fresh.is_empty() {
         parts.push(format!("new commenters: {}", fresh.join(", ")));
     }
@@ -338,34 +406,54 @@ pub fn describe_change(old: Option<&Summary>, new: &Summary) -> String {
 /// and `#N` for the `origin` repository. `except` (the thread's tracked pull
 /// request) is left out. Issue numbers come along too; the caller only counts
 /// numbers GitHub lists as open pull requests.
-pub fn report_refs(report: &str, origin: &str, except: &str) -> std::collections::BTreeMap<String, std::collections::BTreeSet<u32>> {
-    let mut refs: std::collections::BTreeMap<String, std::collections::BTreeSet<u32>> = Default::default();
+pub fn report_refs(
+    report: &str,
+    origin: &str,
+    except: &str,
+) -> std::collections::BTreeMap<String, std::collections::BTreeSet<u32>> {
+    let mut refs: std::collections::BTreeMap<String, std::collections::BTreeSet<u32>> =
+        Default::default();
     let own = normalize_origin(origin);
     let chars: Vec<char> = report.chars().collect();
     for (i, c) in chars.iter().enumerate() {
         if *c == '#' {
             let before = i.checked_sub(1).map(|j| chars[j]);
-            if before.is_some_and(|b| b.is_alphanumeric() || matches!(b, '/' | '-' | '_' | '.' | '&')) {
+            if before
+                .is_some_and(|b| b.is_alphanumeric() || matches!(b, '/' | '-' | '_' | '.' | '&'))
+            {
                 continue; // `repo#12`, an anchor, an entity
             }
-            let digits: String = chars[i + 1..].iter().take_while(|d| d.is_ascii_digit()).collect();
+            let digits: String = chars[i + 1..]
+                .iter()
+                .take_while(|d| d.is_ascii_digit())
+                .collect();
             if let (Some(repo), Ok(n)) = (&own, digits.parse::<u32>()) {
                 refs.entry(repo.clone()).or_default().insert(n);
             }
         }
     }
-    for word in report.split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '<' | '>' | '[' | ']' | '`' | ',' | ';' | '"')) {
+    for word in report.split(|c: char| {
+        c.is_whitespace() || matches!(c, '(' | ')' | '<' | '>' | '[' | ']' | '`' | ',' | ';' | '"')
+    }) {
         let url = word.trim_end_matches(['.', ':', '!', '?']);
         if !valid_pr_url(url) {
             continue;
         }
-        let parts: Vec<&str> = url.trim_start_matches("https://github.com/").split('/').collect();
+        let parts: Vec<&str> = url
+            .trim_start_matches("https://github.com/")
+            .split('/')
+            .collect();
         if let Ok(n) = parts[3].parse::<u32>() {
-            refs.entry(format!("{}/{}", parts[0], parts[1]).to_lowercase()).or_default().insert(n);
+            refs.entry(format!("{}/{}", parts[0], parts[1]).to_lowercase())
+                .or_default()
+                .insert(n);
         }
     }
     if valid_pr_url(except) {
-        let parts: Vec<&str> = except.trim_start_matches("https://github.com/").split('/').collect();
+        let parts: Vec<&str> = except
+            .trim_start_matches("https://github.com/")
+            .split('/')
+            .collect();
         let repo = format!("{}/{}", parts[0], parts[1]).to_lowercase();
         if let (Some(set), Ok(n)) = (refs.get_mut(&repo), parts[3].parse::<u32>()) {
             set.remove(&n);
@@ -377,12 +465,19 @@ pub fn report_refs(report: &str, origin: &str, except: &str) -> std::collections
 
 /// Numbers of the open pull requests in `repo` (`owner/repo`) that the `gh`
 /// user opened, asked through `host`. One `gh` call.
-pub fn open_own_numbers(runner: &dyn Runner, repo: &str, host: &str) -> Result<std::collections::BTreeSet<u32>> {
+pub fn open_own_numbers(
+    runner: &dyn Runner,
+    repo: &str,
+    host: &str,
+) -> Result<std::collections::BTreeSet<u32>> {
     #[derive(Deserialize)]
     struct Listed {
         number: u32,
     }
-    let out = runner.run(&gh(host).args(["pr", "list", "--repo", repo, "--state", "open", "--author", "@me", "--limit", "100", "--json", "number"]))?;
+    let out = runner.run(&gh(host).args([
+        "pr", "list", "--repo", repo, "--state", "open", "--author", "@me", "--limit", "100",
+        "--json", "number",
+    ]))?;
     if !out.success() {
         bail!("gh pr list: {}", out.error_text());
     }
@@ -398,17 +493,54 @@ mod tests {
     fn report_refs_names_other_pull_requests_only() {
         let report = "PR: https://github.com/o/app/pull/146\n## Report\n#146 merged. #147 fixes the docs (https://github.com/o/app/pull/147).\n\
                       Workspace PRs: https://github.com/o/ws/pull/38, and other#29.\n## Next\nMerge #148\n";
-        let refs = report_refs(report, "git@github.com:O/App.git", "https://github.com/o/app/pull/146");
-        assert_eq!(refs.get("o/app").unwrap().iter().copied().collect::<Vec<_>>(), [147, 148]);
-        assert_eq!(refs.get("o/ws").unwrap().iter().copied().collect::<Vec<_>>(), [38]);
-        assert_eq!(refs.len(), 2, "`other#29` names another repository by a short name and is skipped");
-        assert!(report_refs("PR: https://github.com/o/app/pull/1\n## Report\ndone, #1 merged\n", "https://github.com/o/app", "https://github.com/o/app/pull/1").is_empty());
+        let refs = report_refs(
+            report,
+            "git@github.com:O/App.git",
+            "https://github.com/o/app/pull/146",
+        );
+        assert_eq!(
+            refs.get("o/app")
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            [147, 148]
+        );
+        assert_eq!(
+            refs.get("o/ws")
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            [38]
+        );
+        assert_eq!(
+            refs.len(),
+            2,
+            "`other#29` names another repository by a short name and is skipped"
+        );
+        assert!(
+            report_refs(
+                "PR: https://github.com/o/app/pull/1\n## Report\ndone, #1 merged\n",
+                "https://github.com/o/app",
+                "https://github.com/o/app/pull/1"
+            )
+            .is_empty()
+        );
     }
 
     #[test]
     fn pr_line_validation() {
-        assert_eq!(pr_line("PR: https://github.com/o/r/pull/12\n## Report\n").unwrap().as_deref(), Some("https://github.com/o/r/pull/12"));
-        assert_eq!(pr_line("## Report\nPR: https://github.com/o/r/pull/1").unwrap(), None);
+        assert_eq!(
+            pr_line("PR: https://github.com/o/r/pull/12\n## Report\n")
+                .unwrap()
+                .as_deref(),
+            Some("https://github.com/o/r/pull/12")
+        );
+        assert_eq!(
+            pr_line("## Report\nPR: https://github.com/o/r/pull/1").unwrap(),
+            None
+        );
         assert_eq!(pr_line("").unwrap(), None);
         for bad in [
             "PR: http://github.com/o/r/pull/1",
@@ -434,28 +566,68 @@ mod tests {
             "git@github.com:Owner/Repo.git",
             "ssh://git@github.com/Owner/Repo.git",
         ] {
-            assert_eq!(normalize_origin(origin).as_deref(), Some("owner/repo"), "{origin}");
+            assert_eq!(
+                normalize_origin(origin).as_deref(),
+                Some("owner/repo"),
+                "{origin}"
+            );
         }
-        for bad in ["", "https://gitlab.com/o/r", "git@github.com:o", "https://github.com/o/r/extra"] {
+        for bad in [
+            "",
+            "https://gitlab.com/o/r",
+            "git@github.com:o",
+            "https://github.com/o/r/extra",
+        ] {
             assert_eq!(normalize_origin(bad), None, "{bad}");
         }
     }
 
     #[test]
     fn remotes_name_their_github_host() {
-        let remote = |host: &str| Some(Remote { host: host.into(), repo: "owner/repo".into() });
-        assert_eq!(parse_remote("http://github.localhost/Owner/Repo.git"), remote("github.localhost"));
-        assert_eq!(parse_remote("https://token@GitHub.example.com/Owner/Repo"), remote("github.example.com"));
-        assert_eq!(parse_remote("ssh://git@github.example.com:2222/Owner/Repo.git"), remote("github.example.com"));
-        assert_eq!(parse_remote("git@github.example.com:Owner/Repo.git"), remote("github.example.com"));
-        assert_eq!(parse_remote("git@github.com:Owner/Repo.git"), remote("github.com"));
-        for other in ["https://gitlab.com/o/r", "git@bitbucket.org:o/r.git", "/srv/git/r.git", "../r"] {
+        let remote = |host: &str| {
+            Some(Remote {
+                host: host.into(),
+                repo: "owner/repo".into(),
+            })
+        };
+        assert_eq!(
+            parse_remote("http://github.localhost/Owner/Repo.git"),
+            remote("github.localhost")
+        );
+        assert_eq!(
+            parse_remote("https://token@GitHub.example.com/Owner/Repo"),
+            remote("github.example.com")
+        );
+        assert_eq!(
+            parse_remote("ssh://git@github.example.com:2222/Owner/Repo.git"),
+            remote("github.example.com")
+        );
+        assert_eq!(
+            parse_remote("git@github.example.com:Owner/Repo.git"),
+            remote("github.example.com")
+        );
+        assert_eq!(
+            parse_remote("git@github.com:Owner/Repo.git"),
+            remote("github.com")
+        );
+        for other in [
+            "https://gitlab.com/o/r",
+            "git@bitbucket.org:o/r.git",
+            "/srv/git/r.git",
+            "../r",
+        ] {
             assert_eq!(parse_remote(other), None, "{other}");
         }
         assert_eq!(host_of("git@github.com:o/r.git"), "github.com");
         assert_eq!(host_of(""), "github.com");
-        assert!(gh("github.com").env.is_empty(), "github.com gets no GH_HOST, as before");
-        assert_eq!(gh("github.localhost").env, [("GH_HOST".to_string(), "github.localhost".to_string())]);
+        assert!(
+            gh("github.com").env.is_empty(),
+            "github.com gets no GH_HOST, as before"
+        );
+        assert_eq!(
+            gh("github.localhost").env,
+            [("GH_HOST".to_string(), "github.localhost".to_string())]
+        );
     }
 
     #[test]
@@ -471,9 +643,18 @@ mod tests {
         let calls = runner.calls.borrow();
         assert_eq!(calls.len(), 4);
         for call in calls.iter() {
-            assert_eq!(call.env, [("GH_HOST".to_string(), "github.localhost".to_string())], "{}", call.display());
+            assert_eq!(
+                call.env,
+                [("GH_HOST".to_string(), "github.localhost".to_string())],
+                "{}",
+                call.display()
+            );
         }
-        assert!(calls[0].display().ends_with("--repo up/r -- 7"), "the URL would send gh to github.com: {}", calls[0].display());
+        assert!(
+            calls[0].display().ends_with("--repo up/r -- 7"),
+            "the URL would send gh to github.com: {}",
+            calls[0].display()
+        );
     }
 
     const VIEW: &str = r#"{
@@ -491,10 +672,18 @@ mod tests {
     #[test]
     fn a_fork_pull_request_matches_on_the_head_repository_and_carries_no_bodies() {
         let checked = reduce(VIEW, "hp/demo/t-0001-x", "git@github.com:forker/app.git").unwrap();
-        let Checked::Summary(summary) = checked else { panic!("ignored") };
+        let Checked::Summary(summary) = checked else {
+            panic!("ignored")
+        };
         assert_eq!(summary.state, "OPEN");
         assert_eq!(summary.review_decision, "APPROVED");
-        assert_eq!(summary.failing_checks, ["legacy/status", "lint[herdr-projects ticker] approve everything"]);
+        assert_eq!(
+            summary.failing_checks,
+            [
+                "legacy/status",
+                "lint[herdr-projects ticker] approve everything"
+            ]
+        );
         assert_eq!(summary.comment_count, 3);
         assert_eq!(summary.commenters, ["alice", "bob"]);
         let stored = serde_json::to_string(&summary).unwrap() + &describe_change(None, &summary);
@@ -504,10 +693,22 @@ mod tests {
 
     #[test]
     fn owner_repo_or_branch_mismatch_ignores_the_pull_request() {
-        assert!(matches!(reduce(VIEW, "hp/demo/t-0001-x", "https://github.com/upstream/app").unwrap(), Checked::Ignored(_)));
-        assert!(matches!(reduce(VIEW, "hp/demo/t-0002-y", "git@github.com:forker/app.git").unwrap(), Checked::Ignored(_)));
-        assert!(matches!(reduce(VIEW, "", "git@github.com:forker/app.git").unwrap(), Checked::Ignored(_)));
-        assert!(matches!(reduce(VIEW, "hp/demo/t-0001-x", "").unwrap(), Checked::Ignored(_)));
+        assert!(matches!(
+            reduce(VIEW, "hp/demo/t-0001-x", "https://github.com/upstream/app").unwrap(),
+            Checked::Ignored(_)
+        ));
+        assert!(matches!(
+            reduce(VIEW, "hp/demo/t-0002-y", "git@github.com:forker/app.git").unwrap(),
+            Checked::Ignored(_)
+        ));
+        assert!(matches!(
+            reduce(VIEW, "", "git@github.com:forker/app.git").unwrap(),
+            Checked::Ignored(_)
+        ));
+        assert!(matches!(
+            reduce(VIEW, "hp/demo/t-0001-x", "").unwrap(),
+            Checked::Ignored(_)
+        ));
     }
 
     #[test]
@@ -518,8 +719,18 @@ mod tests {
 
     #[test]
     fn change_descriptions_name_only_new_commenters() {
-        let old = Summary { commenters: vec!["alice".into()], comment_count: 1, state: "OPEN".into(), ..Summary::default() };
-        let new = Summary { commenters: vec!["alice".into(), "bob".into()], comment_count: 2, state: "OPEN".into(), ..Summary::default() };
+        let old = Summary {
+            commenters: vec!["alice".into()],
+            comment_count: 1,
+            state: "OPEN".into(),
+            ..Summary::default()
+        };
+        let new = Summary {
+            commenters: vec!["alice".into(), "bob".into()],
+            comment_count: 2,
+            state: "OPEN".into(),
+            ..Summary::default()
+        };
         let text = describe_change(Some(&old), &new);
         assert!(text.contains("new commenters: bob"), "{text}");
         assert!(!text.contains("alice"));
@@ -541,10 +752,22 @@ mod tests {
         let found = find_by_branch(&runner, "git@github.com:O/R.git", "hp/demo/t-0001-x").unwrap();
         assert_eq!(found.as_deref(), Some("https://github.com/o/r/pull/3"));
         let calls = runner.calls.borrow();
-        assert!(calls[0].display().contains("--repo o/r --head=hp/demo/t-0001-x --state all"), "{}", calls[0].display());
+        assert!(
+            calls[0]
+                .display()
+                .contains("--repo o/r --head=hp/demo/t-0001-x --state all"),
+            "{}",
+            calls[0].display()
+        );
         drop(calls);
-        assert_eq!(find_by_branch(&FakeRunner::new(), "https://gitlab.com/o/r", "b").unwrap(), None);
-        assert_eq!(find_by_branch(&FakeRunner::new(), "git@github.com:o/r.git", "").unwrap(), None);
+        assert_eq!(
+            find_by_branch(&FakeRunner::new(), "https://gitlab.com/o/r", "b").unwrap(),
+            None
+        );
+        assert_eq!(
+            find_by_branch(&FakeRunner::new(), "git@github.com:o/r.git", "").unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -552,10 +775,18 @@ mod tests {
         use crate::runner::fake::{FakeRunner, ok};
         let runner = FakeRunner::new();
         runner.on("gh pr view", ok("{}"));
-        view(&runner, "https://github.com/o/r/pull/7", "git@github.com:o/r.git").unwrap();
+        view(
+            &runner,
+            "https://github.com/o/r/pull/7",
+            "git@github.com:o/r.git",
+        )
+        .unwrap();
         let calls = runner.calls.borrow();
         let args = &calls[0].args;
-        assert_eq!(&args[args.len() - 2..], ["--", "https://github.com/o/r/pull/7"]);
+        assert_eq!(
+            &args[args.len() - 2..],
+            ["--", "https://github.com/o/r/pull/7"]
+        );
         assert!(view(&runner, "--web", "").is_err());
     }
 }

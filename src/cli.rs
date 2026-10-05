@@ -219,7 +219,11 @@ enum Command {
         yes: bool,
     },
     /// Change one setting in PROJECT.md (name, goal, coordinator_profile, thread_profile, max_parallel_threads, auto_resolve_days, nudge, mute, repos.add, repos.remove)
-    Set { slug: String, key: String, value: String },
+    Set {
+        slug: String,
+        key: String,
+        value: String,
+    },
     /// Open a file: text in a new Herdr tab running $EDITOR, anything else with the system opener
     OpenFile {
         path: PathBuf,
@@ -495,9 +499,7 @@ enum ProfileCommand {
         names: bool,
     },
     /// Print a profile's launch setup here as JSON (default: [defaults] thread_profile); other machines read it to start threads here
-    Resolve {
-        name: Option<String>,
-    },
+    Resolve { name: Option<String> },
     /// Add a profile (a person at a terminal only)
     Add {
         name: String,
@@ -586,26 +588,57 @@ enum TickerCommand {
 fn profile_change(ctx: &Ctx, command: ProfileCommand) -> Result<crate::profiles::Change> {
     use crate::profiles::{Change, Entry, Role};
     Ok(match command {
-        ProfileCommand::List { .. } | ProfileCommand::Resolve { .. } => bail!("`profile list` and `profile resolve` change nothing"),
-        ProfileCommand::Add { name, agent, fields } => Change::Add {
+        ProfileCommand::List { .. } | ProfileCommand::Resolve { .. } => {
+            bail!("`profile list` and `profile resolve` change nothing")
+        }
+        ProfileCommand::Add {
             name,
-            entry: Entry { agent, model: fields.model.unwrap_or_default(), effort: fields.effort.unwrap_or_default(), args: fields.args, description: fields.description.unwrap_or_default() },
+            agent,
+            fields,
+        } => Change::Add {
+            name,
+            entry: Entry {
+                agent,
+                model: fields.model.unwrap_or_default(),
+                effort: fields.effort.unwrap_or_default(),
+                args: fields.args,
+                description: fields.description.unwrap_or_default(),
+            },
         },
-        ProfileCommand::Edit { name, agent, fields, clear_args } => Change::Edit {
+        ProfileCommand::Edit {
+            name,
+            agent,
+            fields,
+            clear_args,
+        } => Change::Edit {
             name,
             agent,
             model: fields.model,
             effort: fields.effort,
             description: fields.description,
-            args: if clear_args { Some(Vec::new()) } else { (!fields.args.is_empty()).then_some(fields.args) },
+            args: if clear_args {
+                Some(Vec::new())
+            } else {
+                (!fields.args.is_empty()).then_some(fields.args)
+            },
         },
         ProfileCommand::Remove { name } => Change::Remove { name },
-        ProfileCommand::Allow { role, names, project, all } => Change::Allow {
+        ProfileCommand::Allow {
+            role,
+            names,
+            project,
+            all,
+        } => Change::Allow {
             role: Role::parse(&role)?,
-            project: project.map(|slug| Project::load(&ctx.root, &slug).map(|p| p.canonical_dir())).transpose()?,
+            project: project
+                .map(|slug| Project::load(&ctx.root, &slug).map(|p| p.canonical_dir()))
+                .transpose()?,
             names: (!all).then_some(names),
         },
-        ProfileCommand::Default { role, name } => Change::Default { role: Role::parse(&role)?, name },
+        ProfileCommand::Default { role, name } => Change::Default {
+            role: Role::parse(&role)?,
+            name,
+        },
     })
 }
 
@@ -618,7 +651,12 @@ pub fn apply_profile_args(ctx: &Ctx, args: &[String]) -> Result<String> {
         #[command(subcommand)]
         command: ProfileCommand,
     }
-    let parsed = ProfileCli::try_parse_from(args).map_err(|e| anyhow::anyhow!("{}", e.to_string().lines().next().unwrap_or("bad arguments")))?;
+    let parsed = ProfileCli::try_parse_from(args).map_err(|e| {
+        anyhow::anyhow!(
+            "{}",
+            e.to_string().lines().next().unwrap_or("bad arguments")
+        )
+    })?;
     let change = profile_change(ctx, parsed.command)?;
     crate::profiles::apply(&ctx.config_dir, &change)
 }
@@ -638,11 +676,22 @@ pub fn run() -> Result<()> {
     };
 
     match cli.command {
-        Command::New { name, goal, repos, thread_profile, coordinator_profile } => {
-            let repos = repos.iter().map(|arg| project::parse_repo_arg(arg)).collect();
+        Command::New {
+            name,
+            goal,
+            repos,
+            thread_profile,
+            coordinator_profile,
+        } => {
+            let repos = repos
+                .iter()
+                .map(|arg| project::parse_repo_arg(arg))
+                .collect();
             let config = crate::profiles::load(&ctx.config_dir)?;
-            let thread = thread_profile.unwrap_or_else(|| config.new_project_default(crate::profiles::Role::Thread));
-            let coordinator = coordinator_profile.unwrap_or_else(|| config.new_project_default(crate::profiles::Role::Coordinator));
+            let thread = thread_profile
+                .unwrap_or_else(|| config.new_project_default(crate::profiles::Role::Thread));
+            let coordinator = coordinator_profile
+                .unwrap_or_else(|| config.new_project_default(crate::profiles::Role::Coordinator));
             for name in [&thread, &coordinator] {
                 if config.get(name).is_none() {
                     bail!("there is no profile `{name}`; `profile list` shows them");
@@ -665,14 +714,39 @@ pub fn run() -> Result<()> {
                 }
                 let mut counts = std::collections::BTreeMap::new();
                 for row in threads::rows(&ctx, &project) {
-                    *counts.entry(row.group.rank()).or_insert((row.group.label(), 0)) = (row.group.label(), counts.get(&row.group.rank()).map_or(0, |c: &(&str, usize)| c.1) + 1);
+                    *counts
+                        .entry(row.group.rank())
+                        .or_insert((row.group.label(), 0)) = (
+                        row.group.label(),
+                        counts
+                            .get(&row.group.rank())
+                            .map_or(0, |c: &(&str, usize)| c.1)
+                            + 1,
+                    );
                 }
-                let summary: Vec<String> = counts.values().map(|(label, n)| format!("{label}: {n}")).collect();
-                println!("{slug}\t{status}\t{}", if summary.is_empty() { "no threads".to_string() } else { summary.join(", ") });
+                let summary: Vec<String> = counts
+                    .values()
+                    .map(|(label, n)| format!("{label}: {n}"))
+                    .collect();
+                println!(
+                    "{slug}\t{status}\t{}",
+                    if summary.is_empty() {
+                        "no threads".to_string()
+                    } else {
+                        summary.join(", ")
+                    }
+                );
             }
             Ok(())
         }
-        Command::Open { slug, profile, new, tab, rebind, session } => coordinator::open(
+        Command::Open {
+            slug,
+            profile,
+            new,
+            tab,
+            rebind,
+            session,
+        } => coordinator::open(
             &ctx,
             &slug,
             &OpenOptions {
@@ -692,7 +766,11 @@ pub fn run() -> Result<()> {
             }
         },
         Command::Context { slug, peek } => coordinator::context(&ctx, &slug, peek),
-        Command::Assignable { slug, refresh, check } => crate::assign::run(&ctx, &slug, refresh, check.as_deref()),
+        Command::Assignable {
+            slug,
+            refresh,
+            check,
+        } => crate::assign::run(&ctx, &slug, refresh, check.as_deref()),
         Command::Overview { slug, wait } => overview::run(&ctx, slug.as_deref(), wait),
         Command::Focus { slug } => overview::focus(&ctx, slug.as_deref()),
         Command::Unfocus { session } => overview::unfocus(&ctx, &session.into()),
@@ -705,7 +783,17 @@ pub fn run() -> Result<()> {
             }
         },
         Command::Thread { command } => match command {
-            ThreadCommand::Start { slug, title, repo, mut machine, mut profile, kind, base, task_file, from_task } => {
+            ThreadCommand::Start {
+                slug,
+                title,
+                repo,
+                mut machine,
+                mut profile,
+                kind,
+                base,
+                task_file,
+                from_task,
+            } => {
                 let mut task = read_text(&task_file)?;
                 if let Some(from) = from_task {
                     // The task's owner picks the profile and machine.
@@ -714,48 +802,118 @@ pub fn run() -> Result<()> {
                     let found = crate::tasks::find(&tasks_md, &from)?;
                     let config = crate::profiles::load(&ctx.config_dir)?;
                     if found.owner.is_person(|p| config.get(p).is_some()) {
-                        bail!("\"{}\" belongs to {}, a person; people's tasks are never delegated. Change its owner in TASKS.md first if the user asks", found.title, found.owner);
+                        bail!(
+                            "\"{}\" belongs to {}, a person; people's tasks are never delegated. Change its owner in TASKS.md first if the user asks",
+                            found.title,
+                            found.owner
+                        );
                     }
                     (profile, machine) = crate::tasks::launch_for(&found, profile, machine)?;
                     task = crate::tasks::delegated(&tasks_md, &from, &task)?;
                 }
-                let kind = kind.as_deref().map(crate::thread::Kind::parse).transpose()?;
-                let thread = threads::start(&ctx, &slug, StartArgs { title, repo, machine, profile, kind, base, task })?;
-                println!("{}", serde_json::json!({ "id": thread.id, "kind": thread.kind, "profile": thread.profile, "agent": thread.agent, "branch": thread.branch, "pane_id": thread.pane_id }));
+                let kind = kind
+                    .as_deref()
+                    .map(crate::thread::Kind::parse)
+                    .transpose()?;
+                let thread = threads::start(
+                    &ctx,
+                    &slug,
+                    StartArgs {
+                        title,
+                        repo,
+                        machine,
+                        profile,
+                        kind,
+                        base,
+                        task,
+                    },
+                )?;
+                println!(
+                    "{}",
+                    serde_json::json!({ "id": thread.id, "kind": thread.kind, "profile": thread.profile, "agent": thread.agent, "branch": thread.branch, "pane_id": thread.pane_id })
+                );
                 Ok(())
             }
             ThreadCommand::Restart { slug, id, profile } => {
                 let thread = threads::restart(&ctx, &slug, &id, profile.as_deref())?;
-                println!("{} is back in pane {}; the ticker launches its {} agent", thread.id, thread.pane_id, if thread.profile.is_empty() { &thread.agent } else { &thread.profile });
+                println!(
+                    "{} is back in pane {}; the ticker launches its {} agent",
+                    thread.id,
+                    thread.pane_id,
+                    if thread.profile.is_empty() {
+                        &thread.agent
+                    } else {
+                        &thread.profile
+                    }
+                );
                 Ok(())
             }
-            ThreadCommand::Next { slug, id, line, add } => threads::next(&ctx, &slug, &id, line, add.as_deref()),
+            ThreadCommand::Next {
+                slug,
+                id,
+                line,
+                add,
+            } => threads::next(&ctx, &slug, &id, line, add.as_deref()),
             ThreadCommand::Stop { slug, id } => threads::stop(&ctx, &slug, &id),
             ThreadCommand::Brief { slug, id } => threads::brief(&ctx, &slug, &id),
             ThreadCommand::Read { slug, id, lines } => threads::read(&ctx, &slug, &id, lines),
-            ThreadCommand::Keys { slug, id, keys, text } => threads::keys(&ctx, &slug, &id, &keys, text.as_deref()),
-            ThreadCommand::Prompt { slug, id, text_file } => {
+            ThreadCommand::Keys {
+                slug,
+                id,
+                keys,
+                text,
+            } => threads::keys(&ctx, &slug, &id, &keys, text.as_deref()),
+            ThreadCommand::Prompt {
+                slug,
+                id,
+                text_file,
+            } => {
                 let text = read_text(&text_file)?;
                 let state = threads::prompt(&ctx, &slug, &id, &text)?;
                 println!("sent to {id} (agent was {state})");
                 Ok(())
             }
-            ThreadCommand::Adopt { slug, pane, title, task_file } => {
+            ThreadCommand::Adopt {
+                slug,
+                pane,
+                title,
+                task_file,
+            } => {
                 let task = task_file.map(|file| read_text(&file)).transpose()?;
                 let thread = adopt::adopt(&ctx, &slug, &pane, &title, task)?;
-                println!("{}", serde_json::json!({ "id": thread.id, "kind": thread.kind, "pane_id": thread.pane_id, "prompt_pending": thread.prompt_pending }));
+                println!(
+                    "{}",
+                    serde_json::json!({ "id": thread.id, "kind": thread.kind, "pane_id": thread.pane_id, "prompt_pending": thread.prompt_pending })
+                );
                 Ok(())
             }
             ThreadCommand::List { slug, json } => threads::print_list(&ctx, &slug, json),
             ThreadCommand::Show { slug, id, json } => threads::print_show(&ctx, &slug, &id, json),
             ThreadCommand::Ack { slug, id } => threads::ack(&ctx, &slug, &id),
-            ThreadCommand::Resolve { slug, id, reopen, keep_worktree, skip_copy, discard_uncopied } => {
-                threads::resolve(&ctx, &slug, &id, &ResolveArgs { reopen, keep_worktree, skip_copy, discard_uncopied })
-            }
+            ThreadCommand::Resolve {
+                slug,
+                id,
+                reopen,
+                keep_worktree,
+                skip_copy,
+                discard_uncopied,
+            } => threads::resolve(
+                &ctx,
+                &slug,
+                &id,
+                &ResolveArgs {
+                    reopen,
+                    keep_worktree,
+                    skip_copy,
+                    discard_uncopied,
+                },
+            ),
         },
         Command::Sweep { slug, dry_run, yes } => crate::sweep::run(&ctx, &slug, dry_run, yes),
         Command::Set { slug, key, value } => crate::settings::set(&ctx, &slug, &key, &value),
-        Command::OpenFile { path, workspace } => crate::settings::open_file(&ctx, &path, workspace.as_deref()),
+        Command::OpenFile { path, workspace } => {
+            crate::settings::open_file(&ctx, &path, workspace.as_deref())
+        }
         Command::OpenUrl { url } => {
             if !url.starts_with("https://") {
                 bail!("only https URLs are opened");
@@ -763,18 +921,28 @@ pub fn run() -> Result<()> {
             crate::settings::system_open(&ctx, &url)
         }
         Command::Popup { slug } => {
-            let scope = match slug {
-                Some(slug) => Some(slug),
-                None => match overview::resolve_slug_quiet(&ctx) {
-                    Some(slug) => Some(slug),
-                    None => None,
-                },
-            };
+            let scope = slug.or_else(|| overview::resolve_slug_quiet(&ctx));
             let workspace = ctx.env.var("HERDR_WORKSPACE_ID").unwrap_or("").to_string();
             crate::popup::run(&ctx, scope, workspace)
         }
         Command::Routine { command } => match command {
-            RoutineCommand::Toggle { slug, name, on, off } => crate::settings::routine_toggle(&ctx, &slug, &name, if on { Some(true) } else if off { Some(false) } else { None }),
+            RoutineCommand::Toggle {
+                slug,
+                name,
+                on,
+                off,
+            } => crate::settings::routine_toggle(
+                &ctx,
+                &slug,
+                &name,
+                if on {
+                    Some(true)
+                } else if off {
+                    Some(false)
+                } else {
+                    None
+                },
+            ),
             RoutineCommand::Approve { slug, name } => {
                 let project = Project::load(&ctx.root, &slug)?;
                 routine::approve(&ctx.config_dir, &project, &name)
@@ -796,12 +964,39 @@ pub fn run() -> Result<()> {
         Command::Archive { slug } => lifecycle::set_status(&ctx, &slug, Status::Archived),
         Command::Unarchive { slug } => lifecycle::set_status(&ctx, &slug, Status::Active),
         Command::Delete { slug, force } => lifecycle::delete(&ctx, &slug, force),
-        Command::Rename { slug, new_slug, name, dry_run, session } => {
-            crate::rename::cli(&ctx, &crate::rename::Args { from: &slug, to: &new_slug, name: name.as_deref(), dry_run, by_ticker: false }, &session.into())
-        }
-        Command::AdoptWorkspace { name, goal, pane, workspace_cwd, session } => {
-            adopt::adopt_workspace(&ctx, &adopt::AdoptWorkspace { name, goal, pane, workspace_cwd, session: session.into() })
-        }
+        Command::Rename {
+            slug,
+            new_slug,
+            name,
+            dry_run,
+            session,
+        } => crate::rename::cli(
+            &ctx,
+            &crate::rename::Args {
+                from: &slug,
+                to: &new_slug,
+                name: name.as_deref(),
+                dry_run,
+                by_ticker: false,
+            },
+            &session.into(),
+        ),
+        Command::AdoptWorkspace {
+            name,
+            goal,
+            pane,
+            workspace_cwd,
+            session,
+        } => adopt::adopt_workspace(
+            &ctx,
+            &adopt::AdoptWorkspace {
+                name,
+                goal,
+                pane,
+                workspace_cwd,
+                session: session.into(),
+            },
+        ),
         Command::Action { id } => actions::run_action(&ctx, &id),
         Command::Pane { id } => actions::run_pane(&ctx, &id),
         Command::Profile { command } => {
@@ -817,7 +1012,9 @@ pub fn run() -> Result<()> {
                     }
                     return Ok(());
                 }
-                let project = project.map(|slug| Project::load(&ctx.root, &slug)).transpose()?;
+                let project = project
+                    .map(|slug| Project::load(&ctx.root, &slug))
+                    .transpose()?;
                 print!("{}", crate::profiles::list_text(&ctx, project.as_ref())?);
                 return Ok(());
             }
@@ -828,17 +1025,30 @@ pub fn run() -> Result<()> {
         }
         Command::Safety { command } => match command {
             SafetyCommand::Show { target } => {
-                print!("{}", crate::safety::show_text(&ctx, &crate::safety::Target::parse(&ctx, &target)?)?);
+                print!(
+                    "{}",
+                    crate::safety::show_text(&ctx, &crate::safety::Target::parse(&ctx, &target)?)?
+                );
                 Ok(())
             }
-            SafetyCommand::Yolo { target, state } => crate::safety::set_cli(&ctx, &target, "yolo", &[state]),
-            SafetyCommand::Set { target, key, value } => crate::safety::set_cli(&ctx, &target, &key, &value),
+            SafetyCommand::Yolo { target, state } => {
+                crate::safety::set_cli(&ctx, &target, "yolo", &[state])
+            }
+            SafetyCommand::Set { target, key, value } => {
+                crate::safety::set_cli(&ctx, &target, &key, &value)
+            }
         },
         Command::Skill => {
             print!("{}", include_str!("../skill/COORDINATOR.md"));
             // Every harness learns to report here; hooks only add reminders.
             let pane = crate::progress::current(ctx.env, ctx.runner).map(|p| p.pane_id);
-            println!("\n## Progress\n\n{}", crate::progress::guidance(&crate::coordinator::current_prefix(&ctx.root)?, pane.as_deref()));
+            println!(
+                "\n## Progress\n\n{}",
+                crate::progress::guidance(
+                    &crate::coordinator::current_prefix(&ctx.root)?,
+                    pane.as_deref()
+                )
+            );
             Ok(())
         }
         Command::Doctor { fix, session } => {
@@ -847,8 +1057,25 @@ pub fn run() -> Result<()> {
             }
             Ok(())
         }
-        Command::Configure { clients, claude_home, codex_home, dry_run, key, hooks_only } => {
-            let options = crate::setup::ConfigureOptions { clients, claude_home, codex_home, dry_run, hooks: true, sidebar: !hooks_only, key, herdr_config: None, skill: crate::setup::skill_source() };
+        Command::Configure {
+            clients,
+            claude_home,
+            codex_home,
+            dry_run,
+            key,
+            hooks_only,
+        } => {
+            let options = crate::setup::ConfigureOptions {
+                clients,
+                claude_home,
+                codex_home,
+                dry_run,
+                hooks: true,
+                sidebar: !hooks_only,
+                key,
+                herdr_config: None,
+                skill: crate::setup::skill_source(),
+            };
             for note in crate::setup::configure(&ctx, &options)? {
                 println!("{note}");
             }
@@ -886,7 +1113,11 @@ pub fn run() -> Result<()> {
             crate::setup::reload_config(&ctx);
             Ok(())
         }
-        Command::Report { percent, unknown: _, activity } => crate::progress::report(&ctx, percent, &activity),
+        Command::Report {
+            percent,
+            unknown: _,
+            activity,
+        } => crate::progress::report(&ctx, percent, &activity),
         Command::Hook { agent } => {
             // A hook must never fail the harness: errors are swallowed.
             let _ = crate::progress::hook(&ctx, &agent);

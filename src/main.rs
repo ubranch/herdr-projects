@@ -19,8 +19,8 @@ mod popup;
 mod pr;
 mod profiles;
 mod progress;
-mod prompt_box;
 mod project;
+mod prompt_box;
 mod remote;
 mod rename;
 mod routine;
@@ -59,7 +59,11 @@ fn extend_path() {
     let mut dirs: Vec<std::path::PathBuf> = std::env::split_paths(&current).collect();
     let env = paths::Env::from_process().ok();
     #[cfg(unix)]
-    let mut extra: Vec<std::path::PathBuf> = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].iter().map(Into::into).collect();
+    let mut extra: Vec<std::path::PathBuf> =
+        ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+            .iter()
+            .map(Into::into)
+            .collect();
     #[cfg(windows)]
     let mut extra: Vec<std::path::PathBuf> = Vec::new();
     if let Some(env) = env {

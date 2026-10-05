@@ -30,7 +30,14 @@ pub enum Section {
     Memory,
 }
 
-const SECTIONS: [Section; 6] = [Section::Threads, Section::Tasks, Section::Inbox, Section::Routines, Section::Settings, Section::Memory];
+const SECTIONS: [Section; 6] = [
+    Section::Threads,
+    Section::Tasks,
+    Section::Inbox,
+    Section::Routines,
+    Section::Settings,
+    Section::Memory,
+];
 
 impl Section {
     fn name(self) -> &'static str {
@@ -46,11 +53,15 @@ impl Section {
 
     fn keys(self) -> &'static str {
         match self {
-            Section::Threads => "↵ jump  1-9 next  s stop  r restart  a ack  x resolve  o PR  i detail  c coordinator  S sweep",
+            Section::Threads => {
+                "↵ jump  1-9 next  s stop  r restart  a ack  x resolve  o PR  i detail  c coordinator  S sweep"
+            }
             Section::Tasks => "↵ jump  i notes  d delegate  m done  D drop",
             Section::Inbox => "↵ detail  a done",
             Section::Routines => "↵ toggle  i prompt",
-            Section::Settings => "↵ edit  n new profile  d delete profile  Y yolo  p pause/resume  A archive  X delete",
+            Section::Settings => {
+                "↵ edit  n new profile  d delete profile  Y yolo  p pause/resume  A archive  X delete"
+            }
             Section::Memory => "↵ read",
         }
     }
@@ -92,28 +103,63 @@ pub enum RowKind {
     None,
     Thread(Box<ThreadRow>),
     Task(TaskRow),
-    Inbox { slug: String, id: String, body: String },
-    Routine { slug: String, name: String, prompt: String },
+    Inbox {
+        slug: String,
+        id: String,
+        body: String,
+    },
+    Routine {
+        slug: String,
+        name: String,
+        prompt: String,
+    },
     /// A setting; `slug` is empty for a user-wide profile setting.
-    Setting { slug: String, key: String, value: String },
+    Setting {
+        slug: String,
+        key: String,
+        value: String,
+    },
     /// A safety setting of a project, or of all projects (`slug` None).
-    Safety { slug: Option<String>, key: String, value: String },
-    Profile { name: String, builtin: bool },
-    Project { slug: String },
-    Memory { path: PathBuf },
+    Safety {
+        slug: Option<String>,
+        key: String,
+        value: String,
+    },
+    Profile {
+        name: String,
+        builtin: bool,
+    },
+    Project {
+        slug: String,
+    },
+    Memory {
+        path: PathBuf,
+    },
 }
 
 /// Parses TASKS.md (see `tasks::parse`) into popup rows.
 pub fn parse_tasks(slug: &str, text: &str) -> Vec<TaskRow> {
     crate::tasks::parse(text)
         .into_iter()
-        .map(|t| TaskRow { slug: slug.to_string(), list: t.list, title: t.title, owner: t.owner.to_string(), thread: t.thread, description: t.description })
+        .map(|t| TaskRow {
+            slug: slug.to_string(),
+            list: t.list,
+            title: t.title,
+            owner: t.owner.to_string(),
+            thread: t.thread,
+            description: t.description,
+        })
         .collect()
 }
 
 /// `PR #4 · approved · checks ✓ · 2 comments`, from the ticker's last poll.
 pub fn pr_facts(thread: &Thread, summary: Option<&crate::pr::Summary>) -> String {
-    let Some(number) = thread.pr.rsplit('/').next().filter(|n| !n.is_empty() && !thread.pr.is_empty()) else {
+    let Some(number) = thread
+        .pr
+        .rsplit('/')
+        .next()
+        .filter(|n| !n.is_empty() && !thread.pr.is_empty())
+    else {
         return String::new();
     };
     let mut parts = vec![format!("PR #{number}")];
@@ -127,9 +173,17 @@ pub fn pr_facts(thread: &Thread, summary: Option<&crate::pr::Summary>) -> String
             "CHANGES_REQUESTED" => parts.push("changes requested".into()),
             _ => {}
         }
-        parts.push(if s.failing_checks.is_empty() { "checks ✓".into() } else { format!("checks ✗ {}", s.failing_checks.len()) });
+        parts.push(if s.failing_checks.is_empty() {
+            "checks ✓".into()
+        } else {
+            format!("checks ✗ {}", s.failing_checks.len())
+        });
         if s.comment_count > 0 {
-            parts.push(format!("{} comment{}", s.comment_count, if s.comment_count == 1 { "" } else { "s" }));
+            parts.push(format!(
+                "{} comment{}",
+                s.comment_count,
+                if s.comment_count == 1 { "" } else { "s" }
+            ));
         }
     }
     parts.join(" · ")
@@ -154,11 +208,25 @@ pub struct PickerRow {
 
 /// The rows `P` and `/` offer: "All projects", then every listed project.
 pub fn picker_rows(root: &Path) -> Vec<PickerRow> {
-    let mut rows = vec![PickerRow { slug: None, name: "All projects".into(), status: summary(root) }];
+    let mut rows = vec![PickerRow {
+        slug: None,
+        name: "All projects".into(),
+        status: summary(root),
+    }];
     for project in projects_in_scope(root, None, false) {
-        let name = project.read_project_md().map(|(s, _)| project::display_name(&s.name, &project.slug)).unwrap_or_else(|_| project.slug.clone());
-        let status = crate::sidebar::project_line(&crate::sidebar::recorded_groups(&project), project.status() == Status::Paused);
-        rows.push(PickerRow { slug: Some(project.slug.clone()), name, status });
+        let name = project
+            .read_project_md()
+            .map(|(s, _)| project::display_name(&s.name, &project.slug))
+            .unwrap_or_else(|_| project.slug.clone());
+        let status = crate::sidebar::project_line(
+            &crate::sidebar::recorded_groups(&project),
+            project.status() == Status::Paused,
+        );
+        rows.push(PickerRow {
+            slug: Some(project.slug.clone()),
+            name,
+            status,
+        });
     }
     rows
 }
@@ -184,19 +252,36 @@ pub enum PickerOutcome {
 impl Picker {
     /// Opens on the current scope; `filtering` starts with an empty filter.
     pub fn new(rows: Vec<PickerRow>, scope: Option<&str>, filtering: bool) -> Picker {
-        let selected = rows.iter().position(|r| r.slug.as_deref() == scope).unwrap_or(0);
-        Picker { rows, filter: filtering.then(String::new), selected }
+        let selected = rows
+            .iter()
+            .position(|r| r.slug.as_deref() == scope)
+            .unwrap_or(0);
+        Picker {
+            rows,
+            filter: filtering.then(String::new),
+            selected,
+        }
     }
 
     pub fn visible(&self) -> Vec<&PickerRow> {
         let needle = self.filter.as_deref().unwrap_or("").to_lowercase();
-        self.rows.iter().filter(|r| r.name.to_lowercase().contains(&needle) || r.slug.as_deref().is_some_and(|s| s.contains(&needle))).collect()
+        self.rows
+            .iter()
+            .filter(|r| {
+                r.name.to_lowercase().contains(&needle)
+                    || r.slug.as_deref().is_some_and(|s| s.contains(&needle))
+            })
+            .collect()
     }
 
     fn step(&mut self, forward: bool) {
         let n = self.visible().len();
         if n > 0 {
-            self.selected = if forward { (self.selected + 1) % n } else { (self.selected + n - 1) % n };
+            self.selected = if forward {
+                (self.selected + 1) % n
+            } else {
+                (self.selected + n - 1) % n
+            };
         }
     }
 
@@ -217,12 +302,16 @@ impl Picker {
                 if self.filter.as_ref().is_some_and(|f| !f.is_empty()) {
                     let highlighted = self.visible().get(self.selected).map(|r| r.slug.clone());
                     self.filter = None;
-                    self.selected = highlighted.and_then(|slug| self.rows.iter().position(|r| r.slug == slug)).unwrap_or(0);
+                    self.selected = highlighted
+                        .and_then(|slug| self.rows.iter().position(|r| r.slug == slug))
+                        .unwrap_or(0);
                 } else {
                     return PickerOutcome::Close;
                 }
             }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return PickerOutcome::Close,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return PickerOutcome::Close;
+            }
             KeyCode::Char('/') if !filtering => {
                 self.filter = Some(String::new());
             }
@@ -250,7 +339,11 @@ pub fn thread_rows(root: &Path, scope: Option<&str>) -> Vec<ThreadRow> {
         let socket = project.coordinator().map(|c| c.socket).unwrap_or_default();
         let state = crate::steps::load_state(&project);
         for t in thread::list(&project) {
-            let group = if t.status == thread::Status::Resolved { Group::Resolved } else { Group::from_token(&t.last_group).unwrap_or(Group::Working) };
+            let group = if t.status == thread::Status::Resolved {
+                Group::Resolved
+            } else {
+                Group::from_token(&t.last_group).unwrap_or(Group::Working)
+            };
             rows.push(ThreadRow {
                 slug: project.slug.clone(),
                 socket: socket.clone(),
@@ -276,23 +369,49 @@ fn group_color(group: Group) -> Option<Color> {
 
 /// A task's notes as a detail screen.
 fn task_detail(task: &TaskRow) -> Mode {
-    let mut lines = vec![format!("{} · {}", task.list, if task.owner.is_empty() { "no owner" } else { &task.owner }), String::new()];
+    let mut lines = vec![
+        format!(
+            "{} · {}",
+            task.list,
+            if task.owner.is_empty() {
+                "no owner"
+            } else {
+                &task.owner
+            }
+        ),
+        String::new(),
+    ];
     if task.description.trim().is_empty() {
         lines.push("(no notes; ask the coordinator to add some)".into());
     } else {
         lines.extend(task.description.lines().map(|l| format!("  {l}")));
     }
-    Mode::Detail { title: task.title.clone(), lines, files: Vec::new(), selected: 0, scroll: 0 }
+    Mode::Detail {
+        title: task.title.clone(),
+        lines,
+        files: Vec::new(),
+        selected: 0,
+        scroll: 0,
+    }
 }
 
 fn header(text: impl Into<String>) -> Row {
-    Row { header: true, text: text.into(), color: None, kind: RowKind::None }
+    Row {
+        header: true,
+        text: text.into(),
+        color: None,
+        kind: RowKind::None,
+    }
 }
 
 fn thread_line(r: &ThreadRow, with_project: bool) -> String {
     let t = &r.thread;
     let mut parts = vec![format!("{}  {}", t.id, t.title)];
-    let state = if t.state_line.is_empty() { crate::sidebar::word(r.group).to_string() } else { t.state_line.clone() };
+    let state = if t.state_line.is_empty() {
+        crate::sidebar::word(r.group).to_string()
+    } else {
+        t.state_line.clone()
+    };
     parts.push(state);
     if !t.activity.is_empty() && r.group != Group::Resolved {
         parts.push(t.activity.clone());
@@ -310,7 +429,11 @@ fn thread_line(r: &ThreadRow, with_project: bool) -> String {
         parts.push(format!("next: {}", r.next.len()));
     }
     let line = parts.join(" · ");
-    if with_project { format!("{} · {line}", r.slug) } else { line }
+    if with_project {
+        format!("{} · {line}", r.slug)
+    } else {
+        line
+    }
 }
 
 /// The rows of a section, with headings.
@@ -325,26 +448,43 @@ pub fn build(ctx: &Ctx, section: Section, scope: Option<&str>) -> Vec<Row> {
                 let mut slugs: Vec<String> = threads.iter().map(|r| r.slug.clone()).collect();
                 slugs.dedup();
                 for slug in slugs {
-                    let mut mine: Vec<&ThreadRow> = threads.iter().filter(|r| r.slug == slug && r.group != Group::Resolved).collect();
+                    let mut mine: Vec<&ThreadRow> = threads
+                        .iter()
+                        .filter(|r| r.slug == slug && r.group != Group::Resolved)
+                        .collect();
                     mine.sort_by_key(|r| r.group.rank());
                     if mine.is_empty() {
                         continue;
                     }
                     let groups: Vec<Group> = mine.iter().map(|r| r.group).collect();
-                    rows.push(header(format!("{slug} · {}", crate::sidebar::project_line(&groups, false))));
+                    rows.push(header(format!(
+                        "{slug} · {}",
+                        crate::sidebar::project_line(&groups, false)
+                    )));
                     for r in mine {
-                        rows.push(Row { header: false, text: format!("  {}", thread_line(r, false)), color: group_color(r.group), kind: RowKind::Thread(Box::new(r.clone())) });
+                        rows.push(Row {
+                            header: false,
+                            text: format!("  {}", thread_line(r, false)),
+                            color: group_color(r.group),
+                            kind: RowKind::Thread(Box::new(r.clone())),
+                        });
                     }
                 }
             } else {
                 for group in Group::DISPLAY_ORDER {
-                    let mine: Vec<&ThreadRow> = threads.iter().filter(|r| r.group == group).collect();
+                    let mine: Vec<&ThreadRow> =
+                        threads.iter().filter(|r| r.group == group).collect();
                     if mine.is_empty() {
                         continue;
                     }
                     rows.push(header(format!("{} ({})", group.label(), mine.len())));
                     for r in mine {
-                        rows.push(Row { header: false, text: format!("  {}", thread_line(r, false)), color: group_color(r.group), kind: RowKind::Thread(Box::new(r.clone())) });
+                        rows.push(Row {
+                            header: false,
+                            text: format!("  {}", thread_line(r, false)),
+                            color: group_color(r.group),
+                            kind: RowKind::Thread(Box::new(r.clone())),
+                        });
                     }
                 }
             }
@@ -354,20 +494,38 @@ pub fn build(ctx: &Ctx, section: Section, scope: Option<&str>) -> Vec<Row> {
         }
         Section::Tasks => {
             for project in projects_in_scope(root, scope, false) {
-                let text = std::fs::read_to_string(project.dir().join("TASKS.md")).unwrap_or_default();
+                let text =
+                    std::fs::read_to_string(project.dir().join("TASKS.md")).unwrap_or_default();
                 let tasks = parse_tasks(&project.slug, &text);
                 let mut list = None;
                 for task in tasks {
                     if list.as_ref() != Some(&task.list) {
                         list = Some(task.list.clone());
-                        rows.push(header(if scope.is_none() { format!("{} · {}", project.slug, task.list) } else { task.list.clone() }));
+                        rows.push(header(if scope.is_none() {
+                            format!("{} · {}", project.slug, task.list)
+                        } else {
+                            task.list.clone()
+                        }));
                     }
-                    let mut owner = if task.owner.is_empty() { String::new() } else { format!("  ({})", task.owner) };
+                    let mut owner = if task.owner.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  ({})", task.owner)
+                    };
                     if let Some(thread) = &task.thread {
                         owner.push_str(&format!(" · {thread}"));
                     }
-                    let notes = if task.description.trim().is_empty() { "" } else { "  ≡" };
-                    rows.push(Row { header: false, text: format!("  {}{owner}{notes}", task.title), color: None, kind: RowKind::Task(task) });
+                    let notes = if task.description.trim().is_empty() {
+                        ""
+                    } else {
+                        "  ≡"
+                    };
+                    rows.push(Row {
+                        header: false,
+                        text: format!("  {}{owner}{notes}", task.title),
+                        color: None,
+                        kind: RowKind::Task(task),
+                    });
                 }
             }
             if rows.is_empty() {
@@ -377,9 +535,25 @@ pub fn build(ctx: &Ctx, section: Section, scope: Option<&str>) -> Vec<Row> {
         Section::Inbox => {
             for project in projects_in_scope(root, scope, false) {
                 for item in crate::inbox::unhandled(&project) {
-                    let prefix = if scope.is_none() { format!("{} · ", project.slug) } else { String::new() };
+                    let prefix = if scope.is_none() {
+                        format!("{} · ", project.slug)
+                    } else {
+                        String::new()
+                    };
                     let body = format!("{}\n\n{}", item.summary, item.body);
-                    rows.push(Row { header: false, text: format!("{prefix}{} · {} · {}", item.kind, item.subject, item.summary), color: None, kind: RowKind::Inbox { slug: project.slug.clone(), id: item.id, body } });
+                    rows.push(Row {
+                        header: false,
+                        text: format!(
+                            "{prefix}{} · {} · {}",
+                            item.kind, item.subject, item.summary
+                        ),
+                        color: None,
+                        kind: RowKind::Inbox {
+                            slug: project.slug.clone(),
+                            id: item.id,
+                            body,
+                        },
+                    });
                 }
             }
             if rows.is_empty() {
@@ -392,21 +566,47 @@ pub fn build(ctx: &Ctx, section: Section, scope: Option<&str>) -> Vec<Row> {
                 let state = crate::steps::load_state(&project);
                 let now = jiff::Zoned::now();
                 for r in routines {
-                    let last = match crate::routine::when_text(&r, state.routines.get(&r.name), &now) {
-                        text if text.is_empty() => String::new(),
-                        text => format!(" · {text}"),
+                    let last =
+                        match crate::routine::when_text(&r, state.routines.get(&r.name), &now) {
+                            text if text.is_empty() => String::new(),
+                            text => format!(" · {text}"),
+                        };
+                    let prefix = if scope.is_none() {
+                        format!("{} · ", project.slug)
+                    } else {
+                        String::new()
                     };
-                    let prefix = if scope.is_none() { format!("{} · ", project.slug) } else { String::new() };
-                    let when = if r.schedule_text.is_empty() { "on pr".to_string() } else { r.schedule_text.clone() };
+                    let when = if r.schedule_text.is_empty() {
+                        "on pr".to_string()
+                    } else {
+                        r.schedule_text.clone()
+                    };
                     rows.push(Row {
                         header: false,
-                        text: format!("{prefix}{} · {when} · {}{last}", r.name, if r.enabled { "enabled" } else { "disabled" }),
-                        color: if r.enabled { None } else { Some(Color::DarkGrey) },
-                        kind: RowKind::Routine { slug: project.slug.clone(), name: r.name.clone(), prompt: r.prompt.clone() },
+                        text: format!(
+                            "{prefix}{} · {when} · {}{last}",
+                            r.name,
+                            if r.enabled { "enabled" } else { "disabled" }
+                        ),
+                        color: if r.enabled {
+                            None
+                        } else {
+                            Some(Color::DarkGrey)
+                        },
+                        kind: RowKind::Routine {
+                            slug: project.slug.clone(),
+                            name: r.name.clone(),
+                            prompt: r.prompt.clone(),
+                        },
                     });
                 }
                 for b in broken {
-                    rows.push(Row { header: false, text: format!("{} · config error: {}", b.file, b.error), color: Some(Color::Red), kind: RowKind::None });
+                    rows.push(Row {
+                        header: false,
+                        text: format!("{} · config error: {}", b.file, b.error),
+                        color: Some(Color::Red),
+                        kind: RowKind::None,
+                    });
                 }
             }
             if rows.is_empty() {
@@ -419,20 +619,42 @@ pub fn build(ctx: &Ctx, section: Section, scope: Option<&str>) -> Vec<Row> {
                 rows.push(header("projects (↵ opens a project's settings)"));
                 for project in projects_in_scope(root, None, true) {
                     let (settings, _) = project.read_project_md().unwrap_or_default_settings();
-                    rows.push(Row { header: false, text: format!("{} · {} · {}", project.slug, project::display_name(&settings.name, &project.slug), project.status()), color: None, kind: RowKind::Project { slug: project.slug.clone() } });
+                    rows.push(Row {
+                        header: false,
+                        text: format!(
+                            "{} · {} · {}",
+                            project.slug,
+                            project::display_name(&settings.name, &project.slug),
+                            project.status()
+                        ),
+                        color: None,
+                        kind: RowKind::Project {
+                            slug: project.slug.clone(),
+                        },
+                    });
                 }
             }
             Some(slug) => {
                 if let Ok(project) = Project::load(root, slug) {
                     let (s, _) = project.read_project_md().unwrap_or_default_settings();
-                    rows.push(header(format!("{} · {}", project::display_name(&s.name, slug), project.status())));
+                    rows.push(header(format!(
+                        "{} · {}",
+                        project::display_name(&s.name, slug),
+                        project.status()
+                    )));
                     let values = [
                         ("name", s.name.clone()),
                         ("goal", s.goal.clone()),
                         ("coordinator_profile", s.coordinator_profile.clone()),
                         ("thread_profile", s.thread_profile.clone()),
-                        ("coordinator_profiles", allowed_text(ctx, Some(&project), Role::Coordinator)),
-                        ("thread_profiles", allowed_text(ctx, Some(&project), Role::Thread)),
+                        (
+                            "coordinator_profiles",
+                            allowed_text(ctx, Some(&project), Role::Coordinator),
+                        ),
+                        (
+                            "thread_profiles",
+                            allowed_text(ctx, Some(&project), Role::Thread),
+                        ),
                         ("max_parallel_threads", s.max_parallel_threads.to_string()),
                         ("auto_resolve_days", s.auto_resolve_days.to_string()),
                         ("nudge", s.nudge.to_string()),
@@ -446,20 +668,54 @@ pub fn build(ctx: &Ctx, section: Section, scope: Option<&str>) -> Vec<Row> {
                             "repos.remove" => "repos (↵ remove)".to_string(),
                             k => k.to_string(),
                         };
-                        rows.push(Row { header: false, text: format!("  {label:<22} {value}"), color: None, kind: RowKind::Setting { slug: slug.to_string(), key: key.to_string(), value } });
+                        rows.push(Row {
+                            header: false,
+                            text: format!("  {label:<22} {value}"),
+                            color: None,
+                            kind: RowKind::Setting {
+                                slug: slug.to_string(),
+                                key: key.to_string(),
+                                value,
+                            },
+                        });
                     }
                 }
             }
         },
         Section::Memory => {
             for project in projects_in_scope(root, scope, false) {
-                rows.push(header(format!("{} · MEMORY.md (read only; change it by asking the coordinator)", project.slug)));
-                rows.push(Row { header: false, text: "  MEMORY.md".into(), color: None, kind: RowKind::Memory { path: project.dir().join("MEMORY.md") } });
-                let mut files: Vec<PathBuf> = std::fs::read_dir(project.dir().join("memory")).map(|e| e.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "md")).collect()).unwrap_or_default();
+                rows.push(header(format!(
+                    "{} · MEMORY.md (read only; change it by asking the coordinator)",
+                    project.slug
+                )));
+                rows.push(Row {
+                    header: false,
+                    text: "  MEMORY.md".into(),
+                    color: None,
+                    kind: RowKind::Memory {
+                        path: project.dir().join("MEMORY.md"),
+                    },
+                });
+                let mut files: Vec<PathBuf> = std::fs::read_dir(project.dir().join("memory"))
+                    .map(|e| {
+                        e.flatten()
+                            .map(|e| e.path())
+                            .filter(|p| p.extension().is_some_and(|x| x == "md"))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 files.sort();
                 for path in files {
-                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    rows.push(Row { header: false, text: format!("  memory/{name}"), color: None, kind: RowKind::Memory { path } });
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    rows.push(Row {
+                        header: false,
+                        text: format!("  memory/{name}"),
+                        color: None,
+                        kind: RowKind::Memory { path },
+                    });
                 }
             }
         }
@@ -477,23 +733,40 @@ pub fn safety_rows(ctx: &Ctx, scope: Option<&str>) -> Vec<Row> {
         },
     };
     let mut rows = vec![header(match scope {
-        None => "safety · all projects (yours; no agent can change it; running agents keep theirs until restarted)",
-        Some(_) => "safety (yours; no agent can change it; running agents keep theirs until restarted)",
+        None => {
+            "safety · all projects (yours; no agent can change it; running agents keep theirs until restarted)"
+        }
+        Some(_) => {
+            "safety (yours; no agent can change it; running agents keep theirs until restarted)"
+        }
     })];
     match crate::safety::rows(&ctx.config_dir, &target) {
         Ok(list) => {
             for r in list {
-                let label = if r.key == "yolo" { "yolo mode (Y)" } else { r.key };
+                let label = if r.key == "yolo" {
+                    "yolo mode (Y)"
+                } else {
+                    r.key
+                };
                 let yolo_on = r.key == "yolo" && r.value == "on";
                 rows.push(Row {
                     header: false,
                     text: format!("  {label:<22} {}  · {}", r.text(), r.source),
                     color: yolo_on.then_some(Color::Yellow),
-                    kind: RowKind::Safety { slug: scope.map(str::to_string), key: r.key.to_string(), value: r.value },
+                    kind: RowKind::Safety {
+                        slug: scope.map(str::to_string),
+                        key: r.key.to_string(),
+                        value: r.value,
+                    },
                 });
             }
         }
-        Err(error) => rows.push(Row { header: false, text: format!("  config error: {error:#}"), color: Some(Color::Red), kind: RowKind::None }),
+        Err(error) => rows.push(Row {
+            header: false,
+            text: format!("  config error: {error:#}"),
+            color: Some(Color::Red),
+            kind: RowKind::None,
+        }),
     }
     rows
 }
@@ -504,30 +777,77 @@ fn profile_rows(ctx: &Ctx, rows: &mut Vec<Row>) {
     let config = match crate::profiles::load(&ctx.config_dir) {
         Ok(config) => config,
         Err(error) => {
-            rows.push(Row { header: false, text: format!("config error: {error:#}"), color: Some(Color::Red), kind: RowKind::None });
+            rows.push(Row {
+                header: false,
+                text: format!("config error: {error:#}"),
+                color: Some(Color::Red),
+                kind: RowKind::None,
+            });
             return;
         }
     };
-    rows.push(header("profiles (n new · ↵ edit · d delete; a built-in is replaced by editing it)"));
+    rows.push(header(
+        "profiles (n new · ↵ edit · d delete; a built-in is replaced by editing it)",
+    ));
     for p in config.listed(&crate::profiles::detect(ctx.env)) {
-        let text = format!("  {:<14} {}{}", p.name, p.summary(), if p.builtin { "  (built-in)" } else { "" });
-        rows.push(Row { header: false, text, color: None, kind: RowKind::Profile { name: p.name.clone(), builtin: p.builtin } });
+        let text = format!(
+            "  {:<14} {}{}",
+            p.name,
+            p.summary(),
+            if p.builtin { "  (built-in)" } else { "" }
+        );
+        rows.push(Row {
+            header: false,
+            text,
+            color: None,
+            kind: RowKind::Profile {
+                name: p.name.clone(),
+                builtin: p.builtin,
+            },
+        });
     }
     let values = [
-        ("thread_profile", config.new_project_default(Role::Thread), "thread_profile (new projects)"),
-        ("coordinator_profile", config.new_project_default(Role::Coordinator), "coordinator_profile (new projects)"),
-        ("thread_profiles", allowed_text(ctx, None, Role::Thread), "thread_profiles (all projects)"),
-        ("coordinator_profiles", allowed_text(ctx, None, Role::Coordinator), "coordinator_profiles (all projects)"),
+        (
+            "thread_profile",
+            config.new_project_default(Role::Thread),
+            "thread_profile (new projects)",
+        ),
+        (
+            "coordinator_profile",
+            config.new_project_default(Role::Coordinator),
+            "coordinator_profile (new projects)",
+        ),
+        (
+            "thread_profiles",
+            allowed_text(ctx, None, Role::Thread),
+            "thread_profiles (all projects)",
+        ),
+        (
+            "coordinator_profiles",
+            allowed_text(ctx, None, Role::Coordinator),
+            "coordinator_profiles (all projects)",
+        ),
     ];
     for (key, value, label) in values {
-        rows.push(Row { header: false, text: format!("  {label:<36} {value}"), color: None, kind: RowKind::Setting { slug: String::new(), key: key.into(), value } });
+        rows.push(Row {
+            header: false,
+            text: format!("  {label:<36} {value}"),
+            color: None,
+            kind: RowKind::Setting {
+                slug: String::new(),
+                key: key.into(),
+                value,
+            },
+        });
     }
 }
 
 /// A role's allow-list as the settings rows show it.
 fn allowed_text(ctx: &Ctx, project: Option<&Project>, role: Role) -> String {
     let config = crate::profiles::load(&ctx.config_dir).unwrap_or_default();
-    let safety = project.and_then(|p| p.safety(&ctx.config_dir).ok()).unwrap_or_default();
+    let safety = project
+        .and_then(|p| p.safety(&ctx.config_dir).ok())
+        .unwrap_or_default();
     match config.allowed(&safety, role) {
         None => "every profile".into(),
         Some(list) if list.is_empty() => "none".into(),
@@ -545,7 +865,14 @@ struct Field {
 
 /// The effort choices for a harness: its default, then its own values.
 fn effort_options(agent: &str) -> Vec<String> {
-    std::iter::once(String::new()).chain(crate::profiles::effort_values(agent).unwrap_or_default().iter().map(|v| v.to_string())).collect()
+    std::iter::once(String::new())
+        .chain(
+            crate::profiles::effort_values(agent)
+                .unwrap_or_default()
+                .iter()
+                .map(|v| v.to_string()),
+        )
+        .collect()
 }
 
 trait OrDefault {
@@ -561,8 +888,20 @@ impl OrDefault for Result<(project::Settings, String)> {
 /// The header summary: `3 projects · 2 need you`.
 pub fn summary(root: &Path) -> String {
     let projects = projects_in_scope(root, None, false);
-    let need: usize = projects.iter().map(|p| crate::sidebar::recorded_groups(p).into_iter().filter(|g| crate::sidebar::needs_you(*g)).count()).sum();
-    format!("{} project{} · {need} need you", projects.len(), if projects.len() == 1 { "" } else { "s" })
+    let need: usize = projects
+        .iter()
+        .map(|p| {
+            crate::sidebar::recorded_groups(p)
+                .into_iter()
+                .filter(|g| crate::sidebar::needs_you(*g))
+                .count()
+        })
+        .sum();
+    format!(
+        "{} project{} · {need} need you",
+        projects.len(),
+        if projects.len() == 1 { "" } else { "s" }
+    )
 }
 
 // ---------------------------------------------------------------- the loop
@@ -570,15 +909,44 @@ pub fn summary(root: &Path) -> String {
 enum Mode {
     List,
     /// A scrollable text; `files` are selectable lines that open with ↵.
-    Detail { title: String, lines: Vec<String>, files: Vec<PathBuf>, selected: usize, scroll: usize },
-    Confirm { question: String, action: Vec<String>, lines: Vec<String> },
-    Edit { label: String, buffer: String, action: Vec<String> },
-    Pick { label: String, options: Vec<String>, selected: usize, action: Vec<String> },
+    Detail {
+        title: String,
+        lines: Vec<String>,
+        files: Vec<PathBuf>,
+        selected: usize,
+        scroll: usize,
+    },
+    Confirm {
+        question: String,
+        action: Vec<String>,
+        lines: Vec<String>,
+    },
+    Edit {
+        label: String,
+        buffer: String,
+        action: Vec<String>,
+    },
+    Pick {
+        label: String,
+        options: Vec<String>,
+        selected: usize,
+        action: Vec<String>,
+    },
     /// Several choices at once: space toggles, ↵ runs `action` with the
     /// checked options appended (`--all` when the first, "every profile", is).
-    Toggle { label: String, options: Vec<(String, bool)>, selected: usize, action: Vec<String> },
+    Toggle {
+        label: String,
+        options: Vec<(String, bool)>,
+        selected: usize,
+        action: Vec<String>,
+    },
     /// The profile form: name, harness, model, effort, arguments, description.
-    Form { title: String, fields: Vec<Field>, selected: usize, editing: bool },
+    Form {
+        title: String,
+        fields: Vec<Field>,
+        selected: usize,
+        editing: bool,
+    },
     /// The project picker (`P`, or `/` straight into its filter).
     Projects(Picker),
 }
@@ -599,7 +967,18 @@ pub struct Popup<'a> {
 
 impl<'a> Popup<'a> {
     pub fn new(ctx: &'a Ctx<'a>, scope: Option<String>, workspace: String) -> Self {
-        let mut popup = Popup { ctx, scope, section: 0, selected: 0, rows: Vec::new(), mode: Mode::List, message: String::new(), workspace, quit: false, jump: None };
+        let mut popup = Popup {
+            ctx,
+            scope,
+            section: 0,
+            selected: 0,
+            rows: Vec::new(),
+            mode: Mode::List,
+            message: String::new(),
+            workspace,
+            quit: false,
+            jump: None,
+        };
         popup.reload();
         popup
     }
@@ -607,10 +986,16 @@ impl<'a> Popup<'a> {
     fn reload(&mut self) {
         self.rows = build(self.ctx, SECTIONS[self.section], self.scope.as_deref());
         if SECTIONS[self.section] == Section::Settings {
-            self.rows.extend(safety_rows(self.ctx, self.scope.as_deref()));
+            self.rows
+                .extend(safety_rows(self.ctx, self.scope.as_deref()));
         }
         if self.rows.get(self.selected).is_none_or(|r| r.header) {
-            self.selected = self.rows.iter().position(|r| !r.header).unwrap_or(0).max(self.selected.min(self.rows.len().saturating_sub(1)));
+            self.selected = self
+                .rows
+                .iter()
+                .position(|r| !r.header)
+                .unwrap_or(0)
+                .max(self.selected.min(self.rows.len().saturating_sub(1)));
             if self.rows.get(self.selected).is_some_and(|r| r.header) {
                 self.selected = self.rows.iter().position(|r| !r.header).unwrap_or(0);
             }
@@ -645,15 +1030,19 @@ impl<'a> Popup<'a> {
             // The CLI refuses safety and profile changes without a person at
             // a terminal; the popup is one, so it writes them here instead.
             [safety, set, target, key, words @ ..] if safety == "safety" && set == "set" => {
-                match crate::safety::Target::parse(self.ctx, target).and_then(|t| crate::safety::apply(self.ctx, &t, key, words)) {
+                match crate::safety::Target::parse(self.ctx, target)
+                    .and_then(|t| crate::safety::apply(self.ctx, &t, key, words))
+                {
                     Ok(text) => (true, text),
                     Err(error) => (false, format!("error: {error:#}")),
                 }
             }
-            [profile, ..] if profile == "profile" => match crate::cli::apply_profile_args(self.ctx, args) {
-                Ok(message) => (true, message),
-                Err(error) => (false, format!("error: {error:#}")),
-            },
+            [profile, ..] if profile == "profile" => {
+                match crate::cli::apply_profile_args(self.ctx, args) {
+                    Ok(message) => (true, message),
+                    Err(error) => (false, format!("error: {error:#}")),
+                }
+            }
             _ => run_hp(self.ctx, args, stdin),
         };
         self.message = text;
@@ -662,7 +1051,12 @@ impl<'a> Popup<'a> {
     }
 
     fn thread_args(row: &ThreadRow, command: &str) -> Vec<String> {
-        vec!["thread".into(), command.into(), row.slug.clone(), row.thread.id.clone()]
+        vec![
+            "thread".into(),
+            command.into(),
+            row.slug.clone(),
+            row.thread.id.clone(),
+        ]
     }
 
     fn key(&mut self, key: KeyEvent) {
@@ -672,7 +1066,13 @@ impl<'a> Popup<'a> {
                 self.list_key(key);
                 return;
             }
-            Mode::Detail { title, lines, files, mut selected, mut scroll } => match key.code {
+            Mode::Detail {
+                title,
+                lines,
+                files,
+                mut selected,
+                mut scroll,
+            } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => Mode::List,
                 KeyCode::Down | KeyCode::Char('j') => {
                     if !files.is_empty() {
@@ -680,7 +1080,13 @@ impl<'a> Popup<'a> {
                     } else {
                         scroll = (scroll + 1).min(lines.len().saturating_sub(1));
                     }
-                    Mode::Detail { title, lines, files, selected, scroll }
+                    Mode::Detail {
+                        title,
+                        lines,
+                        files,
+                        selected,
+                        scroll,
+                    }
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if !files.is_empty() {
@@ -688,27 +1094,70 @@ impl<'a> Popup<'a> {
                     } else {
                         scroll = scroll.saturating_sub(1);
                     }
-                    Mode::Detail { title, lines, files, selected, scroll }
+                    Mode::Detail {
+                        title,
+                        lines,
+                        files,
+                        selected,
+                        scroll,
+                    }
                 }
-                KeyCode::PageDown => Mode::Detail { title, lines, files, selected, scroll: scroll + 20 },
-                KeyCode::PageUp => Mode::Detail { title, lines, files, selected, scroll: scroll.saturating_sub(20) },
+                KeyCode::PageDown => Mode::Detail {
+                    title,
+                    lines,
+                    files,
+                    selected,
+                    scroll: scroll + 20,
+                },
+                KeyCode::PageUp => Mode::Detail {
+                    title,
+                    lines,
+                    files,
+                    selected,
+                    scroll: scroll.saturating_sub(20),
+                },
                 KeyCode::Enter if !files.is_empty() => {
-                    let mut args = vec!["open-file".to_string(), files[selected].to_string_lossy().into_owned()];
+                    let mut args = vec![
+                        "open-file".to_string(),
+                        files[selected].to_string_lossy().into_owned(),
+                    ];
                     if !self.workspace.is_empty() {
                         args.extend(["--workspace".into(), self.workspace.clone()]);
                     }
                     if self.run(&args, None) && self.message.contains("new tab") {
                         self.quit = true;
                     }
-                    Mode::Detail { title, lines, files, selected, scroll }
+                    Mode::Detail {
+                        title,
+                        lines,
+                        files,
+                        selected,
+                        scroll,
+                    }
                 }
                 KeyCode::Char('y') if !files.is_empty() => {
                     self.message = copy(&files[selected].to_string_lossy());
-                    Mode::Detail { title, lines, files, selected, scroll }
+                    Mode::Detail {
+                        title,
+                        lines,
+                        files,
+                        selected,
+                        scroll,
+                    }
                 }
-                _ => Mode::Detail { title, lines, files, selected, scroll },
+                _ => Mode::Detail {
+                    title,
+                    lines,
+                    files,
+                    selected,
+                    scroll,
+                },
             },
-            Mode::Confirm { question, action, lines } => match key.code {
+            Mode::Confirm {
+                question,
+                action,
+                lines,
+            } => match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     self.run(&action, None);
                     Mode::List
@@ -717,9 +1166,17 @@ impl<'a> Popup<'a> {
                     self.message = "cancelled".into();
                     Mode::List
                 }
-                _ => Mode::Confirm { question, action, lines },
+                _ => Mode::Confirm {
+                    question,
+                    action,
+                    lines,
+                },
             },
-            Mode::Edit { label, mut buffer, action } => match key.code {
+            Mode::Edit {
+                label,
+                mut buffer,
+                action,
+            } => match key.code {
                 KeyCode::Esc => {
                     self.message = "cancelled".into();
                     Mode::List
@@ -732,46 +1189,102 @@ impl<'a> Popup<'a> {
                 }
                 KeyCode::Backspace => {
                     buffer.pop();
-                    Mode::Edit { label, buffer, action }
+                    Mode::Edit {
+                        label,
+                        buffer,
+                        action,
+                    }
                 }
                 KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                     buffer.push(c);
-                    Mode::Edit { label, buffer, action }
+                    Mode::Edit {
+                        label,
+                        buffer,
+                        action,
+                    }
                 }
-                _ => Mode::Edit { label, buffer, action },
+                _ => Mode::Edit {
+                    label,
+                    buffer,
+                    action,
+                },
             },
-            Mode::Pick { label, options, mut selected, action } => match key.code {
+            Mode::Pick {
+                label,
+                options,
+                mut selected,
+                action,
+            } => match key.code {
                 KeyCode::Esc => {
                     self.message = "cancelled".into();
                     Mode::List
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     selected = selected.saturating_sub(1);
-                    Mode::Pick { label, options, selected, action }
+                    Mode::Pick {
+                        label,
+                        options,
+                        selected,
+                        action,
+                    }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     selected = (selected + 1).min(options.len().saturating_sub(1));
-                    Mode::Pick { label, options, selected, action }
+                    Mode::Pick {
+                        label,
+                        options,
+                        selected,
+                        action,
+                    }
                 }
                 KeyCode::Enter => {
-                    let args: Vec<String> = action.iter().map(|a| if a == "{}" { options[selected].clone() } else { a.clone() }).collect();
+                    let args: Vec<String> = action
+                        .iter()
+                        .map(|a| {
+                            if a == "{}" {
+                                options[selected].clone()
+                            } else {
+                                a.clone()
+                            }
+                        })
+                        .collect();
                     self.run(&args, None);
                     Mode::List
                 }
-                _ => Mode::Pick { label, options, selected, action },
+                _ => Mode::Pick {
+                    label,
+                    options,
+                    selected,
+                    action,
+                },
             },
-            Mode::Toggle { label, mut options, mut selected, action } => match key.code {
+            Mode::Toggle {
+                label,
+                mut options,
+                mut selected,
+                action,
+            } => match key.code {
                 KeyCode::Esc => {
                     self.message = "cancelled".into();
                     Mode::List
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     selected = selected.saturating_sub(1);
-                    Mode::Toggle { label, options, selected, action }
+                    Mode::Toggle {
+                        label,
+                        options,
+                        selected,
+                        action,
+                    }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     selected = (selected + 1).min(options.len().saturating_sub(1));
-                    Mode::Toggle { label, options, selected, action }
+                    Mode::Toggle {
+                        label,
+                        options,
+                        selected,
+                        action,
+                    }
                 }
                 KeyCode::Char(' ') => {
                     options[selected].1 = !options[selected].1;
@@ -780,7 +1293,12 @@ impl<'a> Popup<'a> {
                     } else if selected > 0 && options[selected].1 {
                         options[0].1 = false;
                     }
-                    Mode::Toggle { label, options, selected, action }
+                    Mode::Toggle {
+                        label,
+                        options,
+                        selected,
+                        action,
+                    }
                 }
                 KeyCode::Enter => {
                     let mut args = action.clone();
@@ -789,33 +1307,67 @@ impl<'a> Popup<'a> {
                     } else {
                         args.extend(options.iter().skip(1).filter(|o| o.1).map(|o| o.0.clone()));
                         if args.len() == action.len() {
-                            self.message = "check at least one profile, or \"every profile\"".into();
-                            return self.mode = Mode::Toggle { label, options, selected, action };
+                            self.message =
+                                "check at least one profile, or \"every profile\"".into();
+                            return self.mode = Mode::Toggle {
+                                label,
+                                options,
+                                selected,
+                                action,
+                            };
                         }
                     }
                     self.run(&args, None);
                     Mode::List
                 }
-                _ => Mode::Toggle { label, options, selected, action },
+                _ => Mode::Toggle {
+                    label,
+                    options,
+                    selected,
+                    action,
+                },
             },
-            Mode::Form { title, mut fields, mut selected, editing } => match key.code {
+            Mode::Form {
+                title,
+                mut fields,
+                mut selected,
+                editing,
+            } => match key.code {
                 KeyCode::Esc => {
                     self.message = "cancelled".into();
                     Mode::List
                 }
                 KeyCode::Up | KeyCode::BackTab => {
                     selected = selected.saturating_sub(1);
-                    Mode::Form { title, fields, selected, editing }
+                    Mode::Form {
+                        title,
+                        fields,
+                        selected,
+                        editing,
+                    }
                 }
                 KeyCode::Down | KeyCode::Tab => {
                     selected = (selected + 1).min(fields.len() - 1);
-                    Mode::Form { title, fields, selected, editing }
+                    Mode::Form {
+                        title,
+                        fields,
+                        selected,
+                        editing,
+                    }
                 }
                 KeyCode::Left | KeyCode::Right if !fields[selected].options.is_empty() => {
                     let field = &mut fields[selected];
                     let n = field.options.len();
-                    let at = field.options.iter().position(|o| *o == field.value).unwrap_or(0);
-                    let next = if key.code == KeyCode::Right { (at + 1) % n } else { (at + n - 1) % n };
+                    let at = field
+                        .options
+                        .iter()
+                        .position(|o| *o == field.value)
+                        .unwrap_or(0);
+                    let next = if key.code == KeyCode::Right {
+                        (at + 1) % n
+                    } else {
+                        (at + n - 1) % n
+                    };
                     field.value = field.options[next].clone();
                     if field.label == "harness" {
                         // Another harness takes other effort values.
@@ -824,20 +1376,57 @@ impl<'a> Popup<'a> {
                             fields[3].value = String::new();
                         }
                     }
-                    Mode::Form { title, fields, selected, editing }
+                    Mode::Form {
+                        title,
+                        fields,
+                        selected,
+                        editing,
+                    }
                 }
-                KeyCode::Backspace if fields[selected].options.is_empty() && !(editing && selected == 0) => {
+                KeyCode::Backspace
+                    if fields[selected].options.is_empty() && !(editing && selected == 0) =>
+                {
                     fields[selected].value.pop();
-                    Mode::Form { title, fields, selected, editing }
+                    Mode::Form {
+                        title,
+                        fields,
+                        selected,
+                        editing,
+                    }
                 }
-                KeyCode::Char(c) if fields[selected].options.is_empty() && !(editing && selected == 0) && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                KeyCode::Char(c)
+                    if fields[selected].options.is_empty()
+                        && !(editing && selected == 0)
+                        && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
                     fields[selected].value.push(c);
-                    Mode::Form { title, fields, selected, editing }
+                    Mode::Form {
+                        title,
+                        fields,
+                        selected,
+                        editing,
+                    }
                 }
                 KeyCode::Enter => {
                     let value = |i: usize| fields[i].value.trim().to_string();
-                    let mut args = vec!["profile".to_string(), if editing { "edit" } else { "add" }.into(), value(0), "--agent".into(), value(1), "--model".into(), value(2), "--effort".into(), value(3), "--description".into(), value(5)];
-                    let extra: Vec<String> = fields[4].value.split_whitespace().map(str::to_string).collect();
+                    let mut args = vec![
+                        "profile".to_string(),
+                        if editing { "edit" } else { "add" }.into(),
+                        value(0),
+                        "--agent".into(),
+                        value(1),
+                        "--model".into(),
+                        value(2),
+                        "--effort".into(),
+                        value(3),
+                        "--description".into(),
+                        value(5),
+                    ];
+                    let extra: Vec<String> = fields[4]
+                        .value
+                        .split_whitespace()
+                        .map(str::to_string)
+                        .collect();
                     if extra.is_empty() && editing {
                         args.push("--clear-args".into());
                     }
@@ -847,10 +1436,20 @@ impl<'a> Popup<'a> {
                     if self.run(&args, None) {
                         Mode::List
                     } else {
-                        Mode::Form { title, fields, selected, editing }
+                        Mode::Form {
+                            title,
+                            fields,
+                            selected,
+                            editing,
+                        }
                     }
                 }
-                _ => Mode::Form { title, fields, selected, editing },
+                _ => Mode::Form {
+                    title,
+                    fields,
+                    selected,
+                    editing,
+                },
             },
             Mode::Projects(mut picker) => match picker.key(key) {
                 PickerOutcome::Stay => Mode::Projects(picker),
@@ -867,46 +1466,108 @@ impl<'a> Popup<'a> {
 
     /// A pick of the profiles `role` may use (in `slug`, or anywhere when
     /// empty), `current` first.
-    fn profile_picker(&self, label: &str, slug: &str, role: Role, current: &str, action: Vec<String>) -> Mode {
+    fn profile_picker(
+        &self,
+        label: &str,
+        slug: &str,
+        role: Role,
+        current: &str,
+        action: Vec<String>,
+    ) -> Mode {
         let config = crate::profiles::load(&self.ctx.config_dir).unwrap_or_default();
         let project = Project::load(&self.ctx.root, slug).ok();
-        let safety = project.as_ref().and_then(|p| p.safety(&self.ctx.config_dir).ok()).unwrap_or_default();
+        let safety = project
+            .as_ref()
+            .and_then(|p| p.safety(&self.ctx.config_dir).ok())
+            .unwrap_or_default();
         let detected = crate::profiles::detect(self.ctx.env);
-        let profiles = if slug.is_empty() { config.listed(&detected) } else { crate::profiles::usable(&config, &safety, role, &detected, current) };
+        let profiles = if slug.is_empty() {
+            config.listed(&detected)
+        } else {
+            crate::profiles::usable(&config, &safety, role, &detected, current)
+        };
         let mut names: Vec<String> = profiles.into_iter().map(|p| p.name).collect();
         if let Some(at) = names.iter().position(|n| n == current) {
             let first = names.remove(at);
             names.insert(0, first);
         }
         if names.is_empty() {
-            return Mode::Detail { title: label.into(), lines: vec!["No profile is allowed here. Allow one in the settings section.".into()], files: Vec::new(), selected: 0, scroll: 0 };
+            return Mode::Detail {
+                title: label.into(),
+                lines: vec![
+                    "No profile is allowed here. Allow one in the settings section.".into(),
+                ],
+                files: Vec::new(),
+                selected: 0,
+                scroll: 0,
+            };
         }
-        Mode::Pick { label: label.into(), options: names, selected: 0, action }
+        Mode::Pick {
+            label: label.into(),
+            options: names,
+            selected: 0,
+            action,
+        }
     }
 
     /// The allow-list toggle for `role`, in `slug` or for all projects.
     fn allow_toggle(&self, slug: &str, role: Role) -> Mode {
         let config = crate::profiles::load(&self.ctx.config_dir).unwrap_or_default();
         let project = Project::load(&self.ctx.root, slug).ok();
-        let safety = project.as_ref().and_then(|p| p.safety(&self.ctx.config_dir).ok()).unwrap_or_default();
+        let safety = project
+            .as_ref()
+            .and_then(|p| p.safety(&self.ctx.config_dir).ok())
+            .unwrap_or_default();
         let allowed = config.allowed(&safety, role);
-        let mut names: Vec<String> = config.listed(&crate::profiles::detect(self.ctx.env)).into_iter().map(|p| p.name).collect();
+        let mut names: Vec<String> = config
+            .listed(&crate::profiles::detect(self.ctx.env))
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
         for name in allowed.iter().flatten() {
             if !names.contains(name) {
                 names.push(name.clone());
             }
         }
-        let mut options = vec![("every profile, now and later".to_string(), allowed.is_none())];
+        let mut options = vec![(
+            "every profile, now and later".to_string(),
+            allowed.is_none(),
+        )];
         options.extend(names.into_iter().map(|n| {
             let on = allowed.as_ref().is_some_and(|l| l.contains(&n));
             (n, on)
         }));
-        let mut action = vec!["profile".to_string(), "allow".into(), if role == Role::Thread { "threads" } else { "coordinator" }.into()];
+        let mut action = vec![
+            "profile".to_string(),
+            "allow".into(),
+            if role == Role::Thread {
+                "threads"
+            } else {
+                "coordinator"
+            }
+            .into(),
+        ];
         if !slug.is_empty() {
             action.extend(["--project".into(), slug.to_string()]);
         }
-        let scope = if slug.is_empty() { "every project without its own list".to_string() } else { slug.to_string() };
-        Mode::Toggle { label: format!("{} may use, in {scope}", if role == Role::Thread { "Threads" } else { "Coordinators" }), options, selected: 0, action }
+        let scope = if slug.is_empty() {
+            "every project without its own list".to_string()
+        } else {
+            slug.to_string()
+        };
+        Mode::Toggle {
+            label: format!(
+                "{} may use, in {scope}",
+                if role == Role::Thread {
+                    "Threads"
+                } else {
+                    "Coordinators"
+                }
+            ),
+            options,
+            selected: 0,
+            action,
+        }
     }
 
     /// The profile form, empty for `n` or filled from profile `name`.
@@ -914,23 +1575,64 @@ impl<'a> Popup<'a> {
         let config = crate::profiles::load(&self.ctx.config_dir).unwrap_or_default();
         let existing = name.and_then(|n| config.get(n));
         let editing = existing.as_ref().is_some_and(|p| !p.builtin);
-        let entry = existing.as_ref().map(|p| p.entry.clone()).unwrap_or_else(|| crate::profiles::Entry { agent: "claude".into(), ..Default::default() });
+        let entry = existing
+            .as_ref()
+            .map(|p| p.entry.clone())
+            .unwrap_or_else(|| crate::profiles::Entry {
+                agent: "claude".into(),
+                ..Default::default()
+            });
         let mut kinds = crate::profiles::detect(self.ctx.env);
-        kinds.extend(crate::agents::KINDS.iter().map(|k| k.to_string()).filter(|k| !kinds.contains(k)).collect::<Vec<_>>());
+        kinds.extend(
+            crate::agents::KINDS
+                .iter()
+                .map(|k| k.to_string())
+                .filter(|k| !kinds.contains(k))
+                .collect::<Vec<_>>(),
+        );
         let fields = vec![
-            Field { label: "name", value: name.unwrap_or_default().to_string(), options: Vec::new() },
-            Field { label: "harness", value: entry.agent.clone(), options: kinds },
-            Field { label: "model", value: entry.model.clone(), options: Vec::new() },
-            Field { label: "effort", value: entry.effort.clone(), options: effort_options(&entry.agent) },
-            Field { label: "args", value: entry.args.join(" "), options: Vec::new() },
-            Field { label: "description", value: entry.description.clone(), options: Vec::new() },
+            Field {
+                label: "name",
+                value: name.unwrap_or_default().to_string(),
+                options: Vec::new(),
+            },
+            Field {
+                label: "harness",
+                value: entry.agent.clone(),
+                options: kinds,
+            },
+            Field {
+                label: "model",
+                value: entry.model.clone(),
+                options: Vec::new(),
+            },
+            Field {
+                label: "effort",
+                value: entry.effort.clone(),
+                options: effort_options(&entry.agent),
+            },
+            Field {
+                label: "args",
+                value: entry.args.join(" "),
+                options: Vec::new(),
+            },
+            Field {
+                label: "description",
+                value: entry.description.clone(),
+                options: Vec::new(),
+            },
         ];
         let title = match (name, editing) {
             (Some(n), true) => format!("Edit profile `{n}`"),
             (Some(n), false) => format!("Replace the built-in `{n}` with your own profile"),
             (None, _) => "New profile".into(),
         };
-        Mode::Form { title, fields, selected: if name.is_some() { 1 } else { 0 }, editing }
+        Mode::Form {
+            title,
+            fields,
+            selected: if name.is_some() { 1 } else { 0 },
+            editing,
+        }
     }
 
     fn list_key(&mut self, key: KeyEvent) {
@@ -951,7 +1653,13 @@ impl<'a> Popup<'a> {
             }
             KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
-            KeyCode::Char(c @ ('P' | '/')) => self.mode = Mode::Projects(Picker::new(picker_rows(&self.ctx.root), self.scope.as_deref(), c == '/')),
+            KeyCode::Char(c @ ('P' | '/')) => {
+                self.mode = Mode::Projects(Picker::new(
+                    picker_rows(&self.ctx.root),
+                    self.scope.as_deref(),
+                    c == '/',
+                ))
+            }
             _ => match section {
                 Section::Threads => self.thread_key(key),
                 Section::Tasks => self.task_key(key),
@@ -960,10 +1668,17 @@ impl<'a> Popup<'a> {
                 Section::Settings => self.settings_key(key),
                 Section::Memory => {
                     if key.code == KeyCode::Enter
-                        && let Some(RowKind::Memory { path }) = self.current().map(|r| r.kind.clone())
+                        && let Some(RowKind::Memory { path }) =
+                            self.current().map(|r| r.kind.clone())
                     {
                         let text = std::fs::read_to_string(&path).unwrap_or_default();
-                        self.mode = Mode::Detail { title: path.display().to_string(), lines: text.lines().map(str::to_string).collect(), files: Vec::new(), selected: 0, scroll: 0 };
+                        self.mode = Mode::Detail {
+                            title: path.display().to_string(),
+                            lines: text.lines().map(str::to_string).collect(),
+                            files: Vec::new(),
+                            selected: 0,
+                            scroll: 0,
+                        };
                     }
                 }
             },
@@ -971,22 +1686,44 @@ impl<'a> Popup<'a> {
     }
 
     fn thread_key(&mut self, key: KeyEvent) {
-        let slug_for_coordinator = self.scope.clone().or_else(|| match self.current().map(|r| &r.kind) {
-            Some(RowKind::Thread(r)) => Some(r.slug.clone()),
-            _ => None,
-        });
+        let slug_for_coordinator =
+            self.scope
+                .clone()
+                .or_else(|| match self.current().map(|r| &r.kind) {
+                    Some(RowKind::Thread(r)) => Some(r.slug.clone()),
+                    _ => None,
+                });
         if key.code == KeyCode::Char('c') {
             let Some(slug) = slug_for_coordinator else {
                 self.message = "select a thread of the project, or press P to pick one".into();
                 return;
             };
-            let default = Project::load(&self.ctx.root, &slug).and_then(|p| p.read_project_md()).map(|(s, _)| s.coordinator_profile).unwrap_or_else(|_| "claude".into());
-            let socket = self.ctx.env.var("HERDR_SOCKET_PATH").unwrap_or("").to_string();
-            let mut action = vec!["open".to_string(), slug.clone(), "--profile".into(), "{}".into()];
+            let default = Project::load(&self.ctx.root, &slug)
+                .and_then(|p| p.read_project_md())
+                .map(|(s, _)| s.coordinator_profile)
+                .unwrap_or_else(|_| "claude".into());
+            let socket = self
+                .ctx
+                .env
+                .var("HERDR_SOCKET_PATH")
+                .unwrap_or("")
+                .to_string();
+            let mut action = vec![
+                "open".to_string(),
+                slug.clone(),
+                "--profile".into(),
+                "{}".into(),
+            ];
             if !socket.is_empty() {
                 action.extend(["--socket".into(), socket]);
             }
-            self.mode = self.profile_picker("Start or focus a coordinator with", &slug, Role::Coordinator, &default, action);
+            self.mode = self.profile_picker(
+                "Start or focus a coordinator with",
+                &slug,
+                Role::Coordinator,
+                &default,
+                action,
+            );
             return;
         }
         if key.code == KeyCode::Char('S') {
@@ -994,12 +1731,23 @@ impl<'a> Popup<'a> {
                 self.message = "press P to pick a project first".into();
                 return;
             };
-            let (_, text) = run_hp(self.ctx, &["sweep".into(), slug.clone(), "--dry-run".into()], None);
+            let (_, text) = run_hp(
+                self.ctx,
+                &["sweep".into(), slug.clone(), "--dry-run".into()],
+                None,
+            );
             let lines: Vec<String> = text.lines().map(str::to_string).collect();
             if lines.iter().any(|l| l.starts_with("nothing to clean")) || lines.is_empty() {
                 self.message = format!("{slug}: nothing to clean");
             } else {
-                self.mode = Mode::Confirm { question: format!("Remove all {} item(s) listed above from {slug}? y/N", lines.len()), action: vec!["sweep".into(), slug, "--yes".into()], lines };
+                self.mode = Mode::Confirm {
+                    question: format!(
+                        "Remove all {} item(s) listed above from {slug}? y/N",
+                        lines.len()
+                    ),
+                    action: vec!["sweep".into(), slug, "--yes".into()],
+                    lines,
+                };
             }
             return;
         }
@@ -1009,7 +1757,10 @@ impl<'a> Popup<'a> {
         let t = &row.thread;
         match key.code {
             KeyCode::Enter => {
-                if t.status == thread::Status::Resolved || t.pane_id.is_empty() || t.state_line.contains("pane closed") {
+                if t.status == thread::Status::Resolved
+                    || t.pane_id.is_empty()
+                    || t.state_line.contains("pane closed")
+                {
                     self.mode = detail(&self.ctx.root, &row);
                 } else {
                     self.jump = Some((row.socket.clone(), t.machine.clone(), t.pane_id.clone()));
@@ -1020,7 +1771,11 @@ impl<'a> Popup<'a> {
             KeyCode::Char(c @ '1'..='9') => {
                 let n = c.to_digit(10).unwrap_or(0) as usize;
                 if n > row.next.len() {
-                    self.message = if row.next.is_empty() { format!("{} has no Next list", t.id) } else { format!("{} has {} Next line(s)", t.id, row.next.len()) };
+                    self.message = if row.next.is_empty() {
+                        format!("{} has no Next list", t.id)
+                    } else {
+                        format!("{} has {} Next line(s)", t.id, row.next.len())
+                    };
                 } else {
                     let mut args = Self::thread_args(&row, "next");
                     args.extend(["--line".into(), n.to_string()]);
@@ -1036,11 +1791,28 @@ impl<'a> Popup<'a> {
             KeyCode::Char('r') => {
                 let mut action = Self::thread_args(&row, "restart");
                 action.extend(["--profile".into(), "{}".into()]);
-                let current = if t.profile.is_empty() { &t.agent } else { &t.profile };
-                self.mode = self.profile_picker(&format!("Restart {} with", t.id), &row.slug, Role::Thread, current, action);
+                let current = if t.profile.is_empty() {
+                    &t.agent
+                } else {
+                    &t.profile
+                };
+                self.mode = self.profile_picker(
+                    &format!("Restart {} with", t.id),
+                    &row.slug,
+                    Role::Thread,
+                    current,
+                    action,
+                );
             }
             KeyCode::Char('x') => {
-                self.mode = Mode::Confirm { question: format!("Resolve {} \"{}\" and clean up its worktree, panes and merged branch? y/N", t.id, t.title), action: Self::thread_args(&row, "resolve"), lines: Vec::new() };
+                self.mode = Mode::Confirm {
+                    question: format!(
+                        "Resolve {} \"{}\" and clean up its worktree, panes and merged branch? y/N",
+                        t.id, t.title
+                    ),
+                    action: Self::thread_args(&row, "resolve"),
+                    lines: Vec::new(),
+                };
             }
             KeyCode::Char('o') => {
                 if t.pr.is_empty() {
@@ -1054,22 +1826,45 @@ impl<'a> Popup<'a> {
     }
 
     fn coordinator_says(&mut self, slug: &str, text: String) {
-        self.run(&["coordinator".into(), "prompt".into(), slug.to_string(), "--text-file".into(), "-".into()], Some(&text));
+        self.run(
+            &[
+                "coordinator".into(),
+                "prompt".into(),
+                slug.to_string(),
+                "--text-file".into(),
+                "-".into(),
+            ],
+            Some(&text),
+        );
     }
 
     fn task_key(&mut self, key: KeyEvent) {
         let Some(RowKind::Task(task)) = self.current().map(|r| r.kind.clone()) else {
             return;
         };
-        let sentence = |verb: &str| format!("(from the projects popup) {verb} the task \"{}\" in TASKS.md.", task.title);
+        let sentence = |verb: &str| {
+            format!(
+                "(from the projects popup) {verb} the task \"{}\" in TASKS.md.",
+                task.title
+            )
+        };
         match key.code {
             KeyCode::Enter => match &task.thread {
                 Some(id) => {
-                    if let Some(row) = thread_rows(&self.ctx.root, Some(&task.slug)).into_iter().find(|r| &r.thread.id == id) {
-                        if row.thread.pane_id.is_empty() || row.thread.status == thread::Status::Resolved {
+                    if let Some(row) = thread_rows(&self.ctx.root, Some(&task.slug))
+                        .into_iter()
+                        .find(|r| &r.thread.id == id)
+                    {
+                        if row.thread.pane_id.is_empty()
+                            || row.thread.status == thread::Status::Resolved
+                        {
                             self.mode = detail(&self.ctx.root, &row);
                         } else {
-                            self.jump = Some((row.socket.clone(), row.thread.machine.clone(), row.thread.pane_id.clone()));
+                            self.jump = Some((
+                                row.socket.clone(),
+                                row.thread.machine.clone(),
+                                row.thread.pane_id.clone(),
+                            ));
                             self.quit = true;
                         }
                     }
@@ -1079,7 +1874,9 @@ impl<'a> Popup<'a> {
             },
             KeyCode::Char('i') => self.mode = task_detail(&task),
             KeyCode::Char('d') => self.coordinator_says(&task.slug, sentence("Please delegate")),
-            KeyCode::Char('m') => self.coordinator_says(&task.slug, sentence("Please mark as done")),
+            KeyCode::Char('m') => {
+                self.coordinator_says(&task.slug, sentence("Please mark as done"))
+            }
             KeyCode::Char('D') => self.coordinator_says(&task.slug, sentence("Please drop")),
             _ => {}
         }
@@ -1090,7 +1887,15 @@ impl<'a> Popup<'a> {
             return;
         };
         match key.code {
-            KeyCode::Enter => self.mode = Mode::Detail { title: id, lines: body.lines().map(str::to_string).collect(), files: Vec::new(), selected: 0, scroll: 0 },
+            KeyCode::Enter => {
+                self.mode = Mode::Detail {
+                    title: id,
+                    lines: body.lines().map(str::to_string).collect(),
+                    files: Vec::new(),
+                    selected: 0,
+                    scroll: 0,
+                }
+            }
             KeyCode::Char('a') => {
                 self.run(&["inbox".into(), "done".into(), slug, id], None);
             }
@@ -1099,14 +1904,23 @@ impl<'a> Popup<'a> {
     }
 
     fn routine_key(&mut self, key: KeyEvent) {
-        let Some(RowKind::Routine { slug, name, prompt }) = self.current().map(|r| r.kind.clone()) else {
+        let Some(RowKind::Routine { slug, name, prompt }) = self.current().map(|r| r.kind.clone())
+        else {
             return;
         };
         match key.code {
             KeyCode::Enter => {
                 self.run(&["routine".into(), "toggle".into(), slug, name], None);
             }
-            KeyCode::Char('i') => self.mode = Mode::Detail { title: name, lines: prompt.lines().map(str::to_string).collect(), files: Vec::new(), selected: 0, scroll: 0 },
+            KeyCode::Char('i') => {
+                self.mode = Mode::Detail {
+                    title: name,
+                    lines: prompt.lines().map(str::to_string).collect(),
+                    files: Vec::new(),
+                    selected: 0,
+                    scroll: 0,
+                }
+            }
             _ => {}
         }
     }
@@ -1117,11 +1931,25 @@ impl<'a> Popup<'a> {
         let target = self.scope.clone().unwrap_or_else(|| "--global".into());
         let label = self.scope.clone().unwrap_or_else(|| "all projects".into());
         let on = safety_rows(self.ctx, self.scope.as_deref()).iter().any(|r| matches!(&r.kind, RowKind::Safety { key, value, .. } if key == "yolo" && value == "on"));
-        let action: Vec<String> = ["safety", "set", &target, "yolo", if on { "off" } else { "on" }].map(String::from).to_vec();
+        let action: Vec<String> = [
+            "safety",
+            "set",
+            &target,
+            "yolo",
+            if on { "off" } else { "on" },
+        ]
+        .map(String::from)
+        .to_vec();
         if on {
             self.run(&action, None);
         } else {
-            self.mode = Mode::Confirm { question: format!("Yolo for {label}? Threads start without asking; agents run with no permission prompts. y/N"), action, lines: Vec::new() };
+            self.mode = Mode::Confirm {
+                question: format!(
+                    "Yolo for {label}? Threads start without asking; agents run with no permission prompts. y/N"
+                ),
+                action,
+                lines: Vec::new(),
+            };
         }
     }
 
@@ -1137,35 +1965,73 @@ impl<'a> Popup<'a> {
         match self.current().map(|r| r.kind.clone()) {
             Some(RowKind::Profile { name, builtin }) => match key.code {
                 KeyCode::Enter => self.mode = self.profile_form(Some(&name)),
-                KeyCode::Char('d') if builtin => self.message = format!("`{name}` is built in: it shows while its CLI is installed and signed in"),
+                KeyCode::Char('d') if builtin => {
+                    self.message = format!(
+                        "`{name}` is built in: it shows while its CLI is installed and signed in"
+                    )
+                }
                 KeyCode::Char('d') => {
-                    self.mode = Mode::Confirm { question: format!("Delete profile `{name}`? Threads that use it will not launch again. y/N"), action: vec!["profile".into(), "remove".into(), name], lines: Vec::new() };
+                    self.mode = Mode::Confirm {
+                        question: format!(
+                            "Delete profile `{name}`? Threads that use it will not launch again. y/N"
+                        ),
+                        action: vec!["profile".into(), "remove".into(), name],
+                        lines: Vec::new(),
+                    };
                 }
                 _ => {}
             },
-            Some(RowKind::Setting { slug, key: name, value }) if slug.is_empty() => {
+            Some(RowKind::Setting {
+                slug,
+                key: name,
+                value,
+            }) if slug.is_empty() => {
                 if key.code == KeyCode::Enter {
-                    let role = if name.starts_with("thread") { Role::Thread } else { Role::Coordinator };
-                    let word = if role == Role::Thread { "threads" } else { "coordinator" };
+                    let role = if name.starts_with("thread") {
+                        Role::Thread
+                    } else {
+                        Role::Coordinator
+                    };
+                    let word = if role == Role::Thread {
+                        "threads"
+                    } else {
+                        "coordinator"
+                    };
                     self.mode = if name.ends_with("_profiles") {
                         self.allow_toggle("", role)
                     } else {
-                        self.profile_picker(&format!("{name} for new projects"), "", role, &value, vec!["profile".into(), "default".into(), word.into(), "{}".into()])
+                        self.profile_picker(
+                            &format!("{name} for new projects"),
+                            "",
+                            role,
+                            &value,
+                            vec!["profile".into(), "default".into(), word.into(), "{}".into()],
+                        )
                     };
                 }
             }
-            Some(RowKind::Safety { slug, key: name, value }) => {
+            Some(RowKind::Safety {
+                slug,
+                key: name,
+                value,
+            }) => {
                 if key.code == KeyCode::Enter {
                     let target = slug.clone().unwrap_or_else(|| "--global".into());
                     let action = vec!["safety".to_string(), "set".into(), target, name.clone()];
                     let pick = |options: &[&str]| {
-                        let mut options: Vec<String> = options.iter().map(|o| o.to_string()).collect();
+                        let mut options: Vec<String> =
+                            options.iter().map(|o| o.to_string()).collect();
                         if slug.is_some() {
                             options.push("default".into());
                         }
                         let mut action = action.clone();
                         action.push("{}".into());
-                        Mode::Pick { label: format!("{name} (default: use the all-projects value)"), options, selected: 0, action }
+                        Mode::Pick {
+                            label: format!("{name} (default: use the all-projects value)"),
+                            options,
+                            selected: 0,
+                            action,
+                        }
                     };
                     self.mode = match name.as_str() {
                         "yolo" | "routine_commands" if value == "on" => pick(&["off", "on"]),
@@ -1174,7 +2040,15 @@ impl<'a> Popup<'a> {
                         "start_threads" => pick(&["auto", "propose"]),
                         "trust_screens" if value == "coordinator" => pick(&["user", "coordinator"]),
                         "trust_screens" => pick(&["coordinator", "user"]),
-                        _ => Mode::Edit { label: format!("{name} (space-separated; empty for none)"), buffer: if value == "(none)" { String::new() } else { value }, action },
+                        _ => Mode::Edit {
+                            label: format!("{name} (space-separated; empty for none)"),
+                            buffer: if value == "(none)" {
+                                String::new()
+                            } else {
+                                value
+                            },
+                            action,
+                        },
                     };
                 } else if let Some(slug) = slug {
                     self.project_key(key, &slug);
@@ -1187,14 +2061,22 @@ impl<'a> Popup<'a> {
                     self.reload();
                 }
             }
-            Some(RowKind::Setting { slug, key: name, value }) => match key.code {
+            Some(RowKind::Setting {
+                slug,
+                key: name,
+                value,
+            }) => match key.code {
                 KeyCode::Enter => {
                     let action = vec!["set".to_string(), slug.clone(), name.clone()];
                     self.mode = match name.as_str() {
                         "coordinator_profile" | "thread_profile" => {
                             let mut action = action;
                             action.push("{}".into());
-                            let role = if name == "thread_profile" { Role::Thread } else { Role::Coordinator };
+                            let role = if name == "thread_profile" {
+                                Role::Thread
+                            } else {
+                                Role::Coordinator
+                            };
                             self.profile_picker(&name, &slug, role, &value, action)
                         }
                         "thread_profiles" => self.allow_toggle(&slug, Role::Thread),
@@ -1202,21 +2084,43 @@ impl<'a> Popup<'a> {
                         "nudge" | "mute" => {
                             let mut action = action;
                             action.push("{}".into());
-                            Mode::Pick { label: name.clone(), options: vec![(value != "true").to_string(), value.clone()], selected: 0, action }
+                            Mode::Pick {
+                                label: name.clone(),
+                                options: vec![(value != "true").to_string(), value.clone()],
+                                selected: 0,
+                                action,
+                            }
                         }
                         "repos.remove" => {
-                            let options: Vec<String> = value.split(", ").filter(|s| *s != "(none)").map(str::to_string).collect();
+                            let options: Vec<String> = value
+                                .split(", ")
+                                .filter(|s| *s != "(none)")
+                                .map(str::to_string)
+                                .collect();
                             if options.is_empty() {
                                 self.message = "no repos to remove".into();
                                 Mode::List
                             } else {
                                 let mut action = action;
                                 action.push("{}".into());
-                                Mode::Pick { label: "remove repo".into(), options, selected: 0, action }
+                                Mode::Pick {
+                                    label: "remove repo".into(),
+                                    options,
+                                    selected: 0,
+                                    action,
+                                }
                             }
                         }
-                        "repos.add" => Mode::Edit { label: "add repo (PATH or PATH@MACHINE)".into(), buffer: String::new(), action },
-                        _ => Mode::Edit { label: name.clone(), buffer: value, action },
+                        "repos.add" => Mode::Edit {
+                            label: "add repo (PATH or PATH@MACHINE)".into(),
+                            buffer: String::new(),
+                            action,
+                        },
+                        _ => Mode::Edit {
+                            label: name.clone(),
+                            buffer: value,
+                            action,
+                        },
                     };
                 }
                 _ => self.project_key(key, &slug),
@@ -1230,17 +2134,33 @@ impl<'a> Popup<'a> {
     }
 
     fn project_key(&mut self, key: KeyEvent, slug: &str) {
-        let status = Project::load(&self.ctx.root, slug).map(|p| p.status()).unwrap_or_default();
+        let status = Project::load(&self.ctx.root, slug)
+            .map(|p| p.status())
+            .unwrap_or_default();
         match key.code {
             KeyCode::Char('p') => {
-                let verb = if status == Status::Paused { "resume" } else { "pause" };
+                let verb = if status == Status::Paused {
+                    "resume"
+                } else {
+                    "pause"
+                };
                 self.run(&[verb.into(), slug.to_string()], None);
             }
             KeyCode::Char('A') => {
-                self.mode = Mode::Confirm { question: format!("Archive {slug}? Its workspace closes and it is hidden; the folder stays. y/N"), action: vec!["archive".into(), slug.to_string()], lines: Vec::new() };
+                self.mode = Mode::Confirm {
+                    question: format!(
+                        "Archive {slug}? Its workspace closes and it is hidden; the folder stays. y/N"
+                    ),
+                    action: vec!["archive".into(), slug.to_string()],
+                    lines: Vec::new(),
+                };
             }
             KeyCode::Char('X') => {
-                self.mode = Mode::Confirm { question: format!("Delete {slug}? Its folder moves to the trash. y/N"), action: vec!["delete".into(), slug.to_string(), "--force".into()], lines: Vec::new() };
+                self.mode = Mode::Confirm {
+                    question: format!("Delete {slug}? Its folder moves to the trash. y/N"),
+                    action: vec!["delete".into(), slug.to_string(), "--force".into()],
+                    lines: Vec::new(),
+                };
             }
             _ => {}
         }
@@ -1251,7 +2171,11 @@ impl<'a> Popup<'a> {
     fn draw(&self, out: &mut impl std::io::Write) -> std::io::Result<()> {
         let (width, height) = terminal::size().unwrap_or((100, 30));
         let (width, height) = (width as usize, height as usize);
-        queue!(out, terminal::Clear(terminal::ClearType::All), cursor::MoveTo(0, 0))?;
+        queue!(
+            out,
+            terminal::Clear(terminal::ClearType::All),
+            cursor::MoveTo(0, 0)
+        )?;
         // Header: section tabs and a right-aligned summary.
         let mut tabs = String::new();
         for (i, section) in SECTIONS.iter().enumerate() {
@@ -1272,78 +2196,211 @@ impl<'a> Popup<'a> {
         let right = summary(&self.ctx.root);
         let pad = width.saturating_sub(left.chars().count() + right.chars().count() + 1);
         let left_text: String = left.chars().take(width).collect();
-        queue!(out, SetAttribute(Attribute::Bold), Print(left_text), SetAttribute(Attribute::Reset))?;
+        queue!(
+            out,
+            SetAttribute(Attribute::Bold),
+            Print(left_text),
+            SetAttribute(Attribute::Reset)
+        )?;
         if pad > 0 {
-            queue!(out, Print(" ".repeat(pad)), SetAttribute(Attribute::Dim), Print(&right), SetAttribute(Attribute::Reset))?;
+            queue!(
+                out,
+                Print(" ".repeat(pad)),
+                SetAttribute(Attribute::Dim),
+                Print(&right),
+                SetAttribute(Attribute::Reset)
+            )?;
         }
         queue!(out, cursor::MoveTo(0, 1), Print("─".repeat(width)))?;
 
         let body_top = 2;
         let body_height = height.saturating_sub(4);
         match &self.mode {
-            Mode::Detail { title, lines, files, selected, scroll } => {
-                queue!(out, cursor::MoveTo(0, body_top as u16), SetAttribute(Attribute::Bold), Print(fit(&format!(" {title}"), width)), SetAttribute(Attribute::Reset))?;
+            Mode::Detail {
+                title,
+                lines,
+                files,
+                selected,
+                scroll,
+            } => {
+                queue!(
+                    out,
+                    cursor::MoveTo(0, body_top as u16),
+                    SetAttribute(Attribute::Bold),
+                    Print(fit(&format!(" {title}"), width)),
+                    SetAttribute(Attribute::Reset)
+                )?;
                 let file_start = lines.len();
-                let all: Vec<String> = lines.iter().cloned().chain(files.iter().map(|f| format!("  {}", f.display()))).collect();
-                let start = if files.is_empty() { *scroll } else { (file_start + selected).saturating_sub(body_height.saturating_sub(2)) };
-                for (i, line) in all.iter().skip(start).take(body_height.saturating_sub(1)).enumerate() {
+                let all: Vec<String> = lines
+                    .iter()
+                    .cloned()
+                    .chain(files.iter().map(|f| format!("  {}", f.display())))
+                    .collect();
+                let start = if files.is_empty() {
+                    *scroll
+                } else {
+                    (file_start + selected).saturating_sub(body_height.saturating_sub(2))
+                };
+                for (i, line) in all
+                    .iter()
+                    .skip(start)
+                    .take(body_height.saturating_sub(1))
+                    .enumerate()
+                {
                     let index = start + i;
                     queue!(out, cursor::MoveTo(0, (body_top + 1 + i) as u16))?;
                     if !files.is_empty() && index == file_start + selected {
-                        queue!(out, SetAttribute(Attribute::Reverse), Print(fit(line, width)), SetAttribute(Attribute::Reset))?;
+                        queue!(
+                            out,
+                            SetAttribute(Attribute::Reverse),
+                            Print(fit(line, width)),
+                            SetAttribute(Attribute::Reset)
+                        )?;
                     } else {
                         queue!(out, Print(fit(line, width)))?;
                     }
                 }
             }
             Mode::Confirm { lines, .. } if !lines.is_empty() => {
-                queue!(out, cursor::MoveTo(0, body_top as u16), SetAttribute(Attribute::Bold), Print(fit(" This would remove:", width)), SetAttribute(Attribute::Reset))?;
+                queue!(
+                    out,
+                    cursor::MoveTo(0, body_top as u16),
+                    SetAttribute(Attribute::Bold),
+                    Print(fit(" This would remove:", width)),
+                    SetAttribute(Attribute::Reset)
+                )?;
                 for (i, line) in lines.iter().take(body_height.saturating_sub(2)).enumerate() {
-                    queue!(out, cursor::MoveTo(0, (body_top + 1 + i) as u16), Print(fit(&format!("  {line}"), width)))?;
+                    queue!(
+                        out,
+                        cursor::MoveTo(0, (body_top + 1 + i) as u16),
+                        Print(fit(&format!("  {line}"), width))
+                    )?;
                 }
                 if lines.len() > body_height.saturating_sub(2) {
-                    queue!(out, cursor::MoveTo(0, (body_top + body_height - 1) as u16), Print(fit(&format!("  … and {} more (run `sweep --dry-run` to see all)", lines.len() - body_height + 2), width)))?;
+                    queue!(
+                        out,
+                        cursor::MoveTo(0, (body_top + body_height - 1) as u16),
+                        Print(fit(
+                            &format!(
+                                "  … and {} more (run `sweep --dry-run` to see all)",
+                                lines.len() - body_height + 2
+                            ),
+                            width
+                        ))
+                    )?;
                 }
             }
-            Mode::Pick { label, options, selected, .. } => {
-                queue!(out, cursor::MoveTo(0, body_top as u16), SetAttribute(Attribute::Bold), Print(fit(&format!(" {label}"), width)), SetAttribute(Attribute::Reset))?;
+            Mode::Pick {
+                label,
+                options,
+                selected,
+                ..
+            } => {
+                queue!(
+                    out,
+                    cursor::MoveTo(0, body_top as u16),
+                    SetAttribute(Attribute::Bold),
+                    Print(fit(&format!(" {label}"), width)),
+                    SetAttribute(Attribute::Reset)
+                )?;
                 let start = selected.saturating_sub(body_height.saturating_sub(2));
-                for (i, option) in options.iter().enumerate().skip(start).take(body_height.saturating_sub(1)) {
+                for (i, option) in options
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(body_height.saturating_sub(1))
+                {
                     queue!(out, cursor::MoveTo(0, (body_top + 1 + i - start) as u16))?;
                     let text = fit(&format!("  {option}"), width);
                     if i == *selected {
-                        queue!(out, SetAttribute(Attribute::Reverse), Print(text), SetAttribute(Attribute::Reset))?;
+                        queue!(
+                            out,
+                            SetAttribute(Attribute::Reverse),
+                            Print(text),
+                            SetAttribute(Attribute::Reset)
+                        )?;
                     } else {
                         queue!(out, Print(text))?;
                     }
                 }
             }
-            Mode::Toggle { label, options, selected, .. } => {
-                queue!(out, cursor::MoveTo(0, body_top as u16), SetAttribute(Attribute::Bold), Print(fit(&format!(" {label}"), width)), SetAttribute(Attribute::Reset))?;
+            Mode::Toggle {
+                label,
+                options,
+                selected,
+                ..
+            } => {
+                queue!(
+                    out,
+                    cursor::MoveTo(0, body_top as u16),
+                    SetAttribute(Attribute::Bold),
+                    Print(fit(&format!(" {label}"), width)),
+                    SetAttribute(Attribute::Reset)
+                )?;
                 let start = selected.saturating_sub(body_height.saturating_sub(2));
-                for (i, (option, on)) in options.iter().enumerate().skip(start).take(body_height.saturating_sub(1)) {
+                for (i, (option, on)) in options
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(body_height.saturating_sub(1))
+                {
                     queue!(out, cursor::MoveTo(0, (body_top + 1 + i - start) as u16))?;
-                    let text = fit(&format!("  [{}] {option}", if *on { "x" } else { " " }), width);
+                    let text = fit(
+                        &format!("  [{}] {option}", if *on { "x" } else { " " }),
+                        width,
+                    );
                     if i == *selected {
-                        queue!(out, SetAttribute(Attribute::Reverse), Print(text), SetAttribute(Attribute::Reset))?;
+                        queue!(
+                            out,
+                            SetAttribute(Attribute::Reverse),
+                            Print(text),
+                            SetAttribute(Attribute::Reset)
+                        )?;
                     } else {
                         queue!(out, Print(text))?;
                     }
                 }
             }
-            Mode::Form { title, fields, selected, editing } => {
-                queue!(out, cursor::MoveTo(0, body_top as u16), SetAttribute(Attribute::Bold), Print(fit(&format!(" {title}"), width)), SetAttribute(Attribute::Reset))?;
+            Mode::Form {
+                title,
+                fields,
+                selected,
+                editing,
+            } => {
+                queue!(
+                    out,
+                    cursor::MoveTo(0, body_top as u16),
+                    SetAttribute(Attribute::Bold),
+                    Print(fit(&format!(" {title}"), width)),
+                    SetAttribute(Attribute::Reset)
+                )?;
                 for (i, field) in fields.iter().enumerate() {
                     queue!(out, cursor::MoveTo(0, (body_top + 2 + i) as u16))?;
                     let value = if field.options.is_empty() {
-                        let cursor = if i == *selected && !(*editing && i == 0) { "▏" } else { "" };
+                        let cursor = if i == *selected && !(*editing && i == 0) {
+                            "▏"
+                        } else {
+                            ""
+                        };
                         format!("{}{cursor}", field.value)
                     } else {
-                        format!("‹ {} ›", if field.value.is_empty() { "(default)" } else { &field.value })
+                        format!(
+                            "‹ {} ›",
+                            if field.value.is_empty() {
+                                "(default)"
+                            } else {
+                                &field.value
+                            }
+                        )
                     };
                     let text = fit(&format!("  {:<12} {value}", field.label), width);
                     if i == *selected {
-                        queue!(out, SetAttribute(Attribute::Reverse), Print(text), SetAttribute(Attribute::Reset))?;
+                        queue!(
+                            out,
+                            SetAttribute(Attribute::Reverse),
+                            Print(text),
+                            SetAttribute(Attribute::Reset)
+                        )?;
                     } else {
                         queue!(out, Print(text))?;
                     }
@@ -1355,7 +2412,13 @@ impl<'a> Popup<'a> {
                     "  Profiles live in ~/.config/herdr-projects/config.toml, which agents cannot change.",
                 ];
                 for (i, line) in help.iter().enumerate() {
-                    queue!(out, cursor::MoveTo(0, (body_top + 2 + fields.len() + i) as u16), SetAttribute(Attribute::Dim), Print(fit(line, width)), SetAttribute(Attribute::Reset))?;
+                    queue!(
+                        out,
+                        cursor::MoveTo(0, (body_top + 2 + fields.len() + i) as u16),
+                        SetAttribute(Attribute::Dim),
+                        Print(fit(line, width)),
+                        SetAttribute(Attribute::Reset)
+                    )?;
                 }
             }
             Mode::Projects(picker) => {
@@ -1363,13 +2426,32 @@ impl<'a> Popup<'a> {
                     Some(filter) => format!(" Switch to project  / {filter}▏"),
                     None => " Switch to project".to_string(),
                 };
-                queue!(out, cursor::MoveTo(0, body_top as u16), SetAttribute(Attribute::Bold), Print(fit(&title, width)), SetAttribute(Attribute::Reset))?;
+                queue!(
+                    out,
+                    cursor::MoveTo(0, body_top as u16),
+                    SetAttribute(Attribute::Bold),
+                    Print(fit(&title, width)),
+                    SetAttribute(Attribute::Reset)
+                )?;
                 let visible = picker.visible();
                 if visible.is_empty() {
-                    queue!(out, cursor::MoveTo(0, (body_top + 1) as u16), SetAttribute(Attribute::Dim), Print(fit("  no projects match", width)), SetAttribute(Attribute::Reset))?;
+                    queue!(
+                        out,
+                        cursor::MoveTo(0, (body_top + 1) as u16),
+                        SetAttribute(Attribute::Dim),
+                        Print(fit("  no projects match", width)),
+                        SetAttribute(Attribute::Reset)
+                    )?;
                 }
-                let start = picker.selected.saturating_sub(body_height.saturating_sub(2));
-                for (i, row) in visible.iter().enumerate().skip(start).take(body_height.saturating_sub(1)) {
+                let start = picker
+                    .selected
+                    .saturating_sub(body_height.saturating_sub(2));
+                for (i, row) in visible
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(body_height.saturating_sub(1))
+                {
                     queue!(out, cursor::MoveTo(0, (body_top + 1 + i - start) as u16))?;
                     let current = if row.slug == self.scope { "•" } else { " " };
                     let label = match &row.slug {
@@ -1378,20 +2460,37 @@ impl<'a> Popup<'a> {
                     };
                     let text = fit(&format!(" {current} {label} · {}", row.status), width);
                     if i == picker.selected {
-                        queue!(out, SetAttribute(Attribute::Reverse), Print(text), SetAttribute(Attribute::Reset))?;
+                        queue!(
+                            out,
+                            SetAttribute(Attribute::Reverse),
+                            Print(text),
+                            SetAttribute(Attribute::Reset)
+                        )?;
                     } else {
                         queue!(out, Print(text))?;
                     }
                 }
             }
             _ => {
-                let start = self.selected.saturating_sub(body_height.saturating_sub(1) / 2).min(self.rows.len().saturating_sub(body_height));
+                let start = self
+                    .selected
+                    .saturating_sub(body_height.saturating_sub(1) / 2)
+                    .min(self.rows.len().saturating_sub(body_height));
                 for (i, row) in self.rows.iter().enumerate().skip(start).take(body_height) {
                     queue!(out, cursor::MoveTo(0, (body_top + i - start) as u16))?;
-                    let marker = if i == self.selected && !row.header { "▌" } else { " " };
+                    let marker = if i == self.selected && !row.header {
+                        "▌"
+                    } else {
+                        " "
+                    };
                     let text = fit(&format!("{marker}{}", row.text), width);
                     if row.header {
-                        queue!(out, SetAttribute(Attribute::Bold), Print(text), SetAttribute(Attribute::Reset))?;
+                        queue!(
+                            out,
+                            SetAttribute(Attribute::Bold),
+                            Print(text),
+                            SetAttribute(Attribute::Reset)
+                        )?;
                     } else {
                         if i == self.selected {
                             queue!(out, SetAttribute(Attribute::Reverse))?;
@@ -1403,19 +2502,40 @@ impl<'a> Popup<'a> {
                     }
                 }
                 if self.rows.len() > start + body_height {
-                    queue!(out, cursor::MoveTo(width.saturating_sub(10) as u16, (body_top + body_height - 1) as u16), SetAttribute(Attribute::Dim), Print("↓ more"), SetAttribute(Attribute::Reset))?;
+                    queue!(
+                        out,
+                        cursor::MoveTo(
+                            width.saturating_sub(10) as u16,
+                            (body_top + body_height - 1) as u16
+                        ),
+                        SetAttribute(Attribute::Dim),
+                        Print("↓ more"),
+                        SetAttribute(Attribute::Reset)
+                    )?;
                 }
             }
         }
 
         // Footer: the message or prompt, then the keys.
         let footer = height.saturating_sub(2) as u16;
-        queue!(out, cursor::MoveTo(0, footer), Print("─".repeat(width)), cursor::MoveTo(0, footer + 1))?;
+        queue!(
+            out,
+            cursor::MoveTo(0, footer),
+            Print("─".repeat(width)),
+            cursor::MoveTo(0, footer + 1)
+        )?;
         let hint = match &self.mode {
-            Mode::List => format!("{}  P project  / find  tab section  esc close", SECTIONS[self.section].keys()),
-            Mode::Projects(Picker { filter: Some(_), .. }) => "type to filter  ↑↓ choose  ↵ switch  esc clear/close".into(),
+            Mode::List => format!(
+                "{}  P project  / find  tab section  esc close",
+                SECTIONS[self.section].keys()
+            ),
+            Mode::Projects(Picker {
+                filter: Some(_), ..
+            }) => "type to filter  ↑↓ choose  ↵ switch  esc clear/close".into(),
             Mode::Projects(_) => "↑↓ choose  ↵ switch  / filter  esc close".into(),
-            Mode::Detail { files, .. } if !files.is_empty() => "↑↓ file  ↵ open  y copy path  esc back".into(),
+            Mode::Detail { files, .. } if !files.is_empty() => {
+                "↑↓ file  ↵ open  y copy path  esc back".into()
+            }
             Mode::Detail { .. } => "↑↓ scroll  esc back".into(),
             Mode::Confirm { question, .. } => question.clone(),
             Mode::Edit { label, buffer, .. } => format!("{label}: {buffer}▏  ↵ save  esc cancel"),
@@ -1423,8 +2543,19 @@ impl<'a> Popup<'a> {
             Mode::Toggle { .. } => "↑↓ choose  space check  ↵ save  esc cancel".into(),
             Mode::Form { .. } => "↑↓/tab field  type to edit  ←→ choose  ↵ save  esc cancel".into(),
         };
-        let line = if self.message.is_empty() || matches!(self.mode, Mode::Confirm { .. } | Mode::Edit { .. }) { hint } else { format!("{}  │  {hint}", self.message) };
-        queue!(out, SetAttribute(Attribute::Dim), Print(fit(&format!(" {line}"), width)), SetAttribute(Attribute::Reset))?;
+        let line = if self.message.is_empty()
+            || matches!(self.mode, Mode::Confirm { .. } | Mode::Edit { .. })
+        {
+            hint
+        } else {
+            format!("{}  │  {hint}", self.message)
+        };
+        queue!(
+            out,
+            SetAttribute(Attribute::Dim),
+            Print(fit(&format!(" {line}"), width)),
+            SetAttribute(Attribute::Reset)
+        )?;
         out.flush()
     }
 }
@@ -1435,12 +2566,18 @@ fn detail(root: &Path, row: &ThreadRow) -> Mode {
     let Ok(project) = Project::load(root, &row.slug) else {
         return Mode::List;
     };
-    let mut lines = vec![format!("{} · {} · {}", t.id, crate::sidebar::word(row.group), t.title)];
+    let mut lines = vec![format!(
+        "{} · {} · {}",
+        t.id,
+        crate::sidebar::word(row.group),
+        t.title
+    )];
     if !row.pr_facts.is_empty() {
         lines.push(row.pr_facts.clone());
     }
     lines.push(String::new());
-    let report = std::fs::read_to_string(thread::home_report_path(&project, &t.id)).unwrap_or_else(|_| "(no report yet)".into());
+    let report = std::fs::read_to_string(thread::home_report_path(&project, &t.id))
+        .unwrap_or_else(|_| "(no report yet)".into());
     lines.extend(report.lines().map(str::to_string));
     if !row.next.is_empty() {
         lines.push(String::new());
@@ -1450,8 +2587,18 @@ fn detail(root: &Path, row: &ThreadRow) -> Mode {
         }
     }
     let mut files = Vec::new();
-    for dir in [project.dir().join("library").join(&t.id), project.dir().join("uploads")] {
-        let mut found: Vec<PathBuf> = std::fs::read_dir(&dir).map(|e| e.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect()).unwrap_or_default();
+    for dir in [
+        project.dir().join("library").join(&t.id),
+        project.dir().join("uploads"),
+    ] {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .map(|e| {
+                e.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_file())
+                    .collect()
+            })
+            .unwrap_or_default();
         found.sort();
         files.extend(found);
     }
@@ -1459,7 +2606,13 @@ fn detail(root: &Path, row: &ThreadRow) -> Mode {
         lines.push(String::new());
         lines.push("Files (↵ opens, y copies the path):".into());
     }
-    Mode::Detail { title: format!("{} · {}", row.slug, t.id), lines, files, selected: 0, scroll: 0 }
+    Mode::Detail {
+        title: format!("{} · {}", row.slug, t.id),
+        lines,
+        files,
+        selected: 0,
+        scroll: 0,
+    }
 }
 
 fn fit(text: &str, width: usize) -> String {
@@ -1476,14 +2629,33 @@ fn fit(text: &str, width: usize) -> String {
 fn copy(text: &str) -> String {
     use std::process::{Command, Stdio};
     let tools: &[(&str, &[&str])] = if cfg!(windows) {
-        &[("powershell.exe", &["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[Console]::InputEncoding = [Text.UTF8Encoding]::new(); Set-Clipboard -Value ([Console]::In.ReadToEnd())"])]
+        &[(
+            "powershell.exe",
+            &[
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::InputEncoding = [Text.UTF8Encoding]::new(); Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+            ],
+        )]
     } else if cfg!(target_os = "macos") {
         &[("pbcopy", &[])]
     } else {
-        &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"]), ("xsel", &["--clipboard", "--input"])]
+        &[
+            ("wl-copy", &[]),
+            ("xclip", &["-selection", "clipboard"]),
+            ("xsel", &["--clipboard", "--input"]),
+        ]
     };
     for (tool, args) in tools {
-        if let Ok(mut child) = Command::new(tool).args(*args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        if let Ok(mut child) = Command::new(tool)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
             if let Some(mut stdin) = child.stdin.take() {
                 let _ = stdin.write_all(text.as_bytes());
             }
@@ -1501,15 +2673,36 @@ pub fn run_hp(ctx: &Ctx, args: &[String], stdin: Option<&str>) -> (bool, String)
         return (false, "could not find this binary".into());
     };
     // Sweep and resolve may remove many worktrees; allow them time.
-    let mut cmd = crate::runner::Cmd::new(binary.to_string_lossy(), Duration::from_secs(600)).arg("--root").arg(ctx.root.to_string_lossy()).args(args.iter().cloned());
+    let mut cmd = crate::runner::Cmd::new(binary.to_string_lossy(), Duration::from_secs(600))
+        .arg("--root")
+        .arg(ctx.root.to_string_lossy())
+        .args(args.iter().cloned());
     if let Some(text) = stdin {
         cmd = cmd.stdin(text);
     }
     match ctx.runner.run(&cmd) {
         Ok(out) => {
-            let text = if out.success() { out.stdout.clone() } else { format!("{}\n{}", out.stdout, out.stderr) };
-            let last = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("done").trim().trim_start_matches("herdr-projects: ").to_string();
-            (out.success(), if out.success() { last } else { format!("error: {last}") })
+            let text = if out.success() {
+                out.stdout.clone()
+            } else {
+                format!("{}\n{}", out.stdout, out.stderr)
+            };
+            let last = text
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("done")
+                .trim()
+                .trim_start_matches("herdr-projects: ")
+                .to_string();
+            (
+                out.success(),
+                if out.success() {
+                    last
+                } else {
+                    format!("error: {last}")
+                },
+            )
         }
         Err(error) => (false, format!("error: {error:#}")),
     }
@@ -1519,23 +2712,39 @@ pub fn run_hp(ctx: &Ctx, args: &[String], stdin: Option<&str>) -> (bool, String)
 /// refused while a popup is up; if it is, a detached child retries shortly
 /// after this process (and with it the popup) has exited.
 fn focus(ctx: &Ctx, socket: &str, machine: &str, pane: &str) {
-    let herdr = crate::herdr::Herdr::new(ctx.env.herdr_bin(), socket, ctx.runner).on_machine(machine);
+    let herdr =
+        crate::herdr::Herdr::new(ctx.env.herdr_bin(), socket, ctx.runner).on_machine(machine);
     if herdr.agent_focus(pane).is_ok() {
         return;
     }
     let args = ["--machine", machine, "agent", "focus", pane];
-    let args = if machine.is_empty() { &args[2..] } else { &args[..] };
+    let args = if machine.is_empty() {
+        &args[2..]
+    } else {
+        &args[..]
+    };
     #[cfg(unix)]
     let mut command = {
         let mut command = std::process::Command::new("/bin/sh");
-        command.args(["-c", "sleep 0.2; exec \"$@\"", "sh", &ctx.env.herdr_bin()]).args(args);
+        command
+            .args(["-c", "sleep 0.2; exec \"$@\"", "sh", &ctx.env.herdr_bin()])
+            .args(args);
         command
     };
     #[cfg(windows)]
     let mut command = {
         let mut command = std::process::Command::new("powershell.exe");
-        let script = format!("Start-Sleep -Milliseconds 200; {}", crate::remote::local_command(&ctx.env.herdr_bin(), args));
-        command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &script]);
+        let script = format!(
+            "Start-Sleep -Milliseconds 200; {}",
+            crate::remote::local_command(&ctx.env.herdr_bin(), args)
+        );
+        command.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &script,
+        ]);
         command
     };
     command
@@ -1607,19 +2816,53 @@ mod tests {
         let text = "# Tasks\n\n## Backlog\n- [ ] Write the docs (me)\n- [ ] Fix login (codex-fast@m1) · t-0007\n- [ ] Plain line\n\n## Later\n- [x] Old (agent)\n";
         let tasks = parse_tasks("demo", text);
         assert_eq!(tasks.len(), 4);
-        assert_eq!((tasks[0].list.as_str(), tasks[0].title.as_str(), tasks[0].owner.as_str()), ("Backlog", "Write the docs", "me"));
-        assert_eq!((tasks[1].owner.as_str(), tasks[1].thread.as_deref()), ("codex-fast@m1", Some("t-0007")));
+        assert_eq!(
+            (
+                tasks[0].list.as_str(),
+                tasks[0].title.as_str(),
+                tasks[0].owner.as_str()
+            ),
+            ("Backlog", "Write the docs", "me")
+        );
+        assert_eq!(
+            (tasks[1].owner.as_str(), tasks[1].thread.as_deref()),
+            ("codex-fast@m1", Some("t-0007"))
+        );
         assert_eq!(tasks[2].owner, "");
-        assert_eq!((tasks[3].list.as_str(), tasks[3].owner.as_str()), ("Later", ""));
+        assert_eq!(
+            (tasks[3].list.as_str(), tasks[3].owner.as_str()),
+            ("Later", "")
+        );
     }
 
     #[test]
     fn pr_facts_read_like_the_plan() {
-        let t = Thread { pr: "https://github.com/o/r/pull/4".into(), ..Thread::default() };
-        let s = crate::pr::Summary { state: "OPEN".into(), review_decision: "APPROVED".into(), failing_checks: vec![], comment_count: 2, commenters: vec![], ..Default::default() };
-        assert_eq!(pr_facts(&t, Some(&s)), "PR #4 · approved · checks ✓ · 2 comments");
-        let failing = crate::pr::Summary { failing_checks: vec!["lint".into()], comment_count: 1, review_decision: String::new(), ..s };
-        assert_eq!(pr_facts(&t, Some(&failing)), "PR #4 · checks ✗ 1 · 1 comment");
+        let t = Thread {
+            pr: "https://github.com/o/r/pull/4".into(),
+            ..Thread::default()
+        };
+        let s = crate::pr::Summary {
+            state: "OPEN".into(),
+            review_decision: "APPROVED".into(),
+            failing_checks: vec![],
+            comment_count: 2,
+            commenters: vec![],
+            ..Default::default()
+        };
+        assert_eq!(
+            pr_facts(&t, Some(&s)),
+            "PR #4 · approved · checks ✓ · 2 comments"
+        );
+        let failing = crate::pr::Summary {
+            failing_checks: vec!["lint".into()],
+            comment_count: 1,
+            review_decision: String::new(),
+            ..s
+        };
+        assert_eq!(
+            pr_facts(&t, Some(&failing)),
+            "PR #4 · checks ✗ 1 · 1 comment"
+        );
         assert_eq!(pr_facts(&Thread::default(), None), "");
     }
 
@@ -1637,32 +2880,78 @@ mod tests {
             t.last_group = "waiting-on-you".into();
         })
         .unwrap();
-        std::fs::write(thread::home_report_path(&project, &second.id), "## Report\nok\n## Next\n- Merge the PR\n").unwrap();
+        std::fs::write(
+            thread::home_report_path(&project, &second.id),
+            "## Report\nok\n## Next\n- Merge the PR\n",
+        )
+        .unwrap();
         let rows = build(&world.ctx(), Section::Threads, Some("demo"));
         let texts: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(texts[0], "Waiting on you (1)");
-        assert!(texts[1].contains("t-0002  Second") && texts[1].contains("next: 1"), "{texts:?}");
+        assert!(
+            texts[1].contains("t-0002  Second") && texts[1].contains("next: 1"),
+            "{texts:?}"
+        );
         assert_eq!(texts[2], "Working (1)");
         assert!(texts[3].contains("working · ~40%"));
         let all = build(&world.ctx(), Section::Threads, None);
-        assert!(all[0].text.starts_with("demo · 1 need you · 1 working"), "{:?}", all[0].text);
+        assert!(
+            all[0].text.starts_with("demo · 1 need you · 1 working"),
+            "{:?}",
+            all[0].text
+        );
         let settings = build(&world.ctx(), Section::Settings, Some("demo"));
-        assert!(settings.iter().any(|r| r.text.contains("max_parallel_threads")));
+        assert!(
+            settings
+                .iter()
+                .any(|r| r.text.contains("max_parallel_threads"))
+        );
         assert!(!build(&world.ctx(), Section::Tasks, Some("demo")).is_empty());
         std::fs::write(project.dir().join("TASKS.md"), "# Tasks\n\n## Backlog\n- [ ] Fix login (claude) · t-0003\n  Safari drops the cookie.\n  See issue 42.\n- [ ] Docs (me)\n").unwrap();
         let tasks = build(&world.ctx(), Section::Tasks, Some("demo"));
         let texts: Vec<(&str, bool)> = tasks.iter().map(|r| (r.text.as_str(), r.header)).collect();
-        assert_eq!(texts, [("Backlog", true), ("  Fix login  (claude) · t-0003  ≡", false), ("  Docs  (me)", false)]);
-        let RowKind::Task(task) = &tasks[1].kind else { panic!() };
-        let Mode::Detail { title, lines, .. } = task_detail(task) else { panic!() };
-        assert_eq!((title.as_str(), lines), ("Fix login", vec!["Backlog · claude".to_string(), String::new(), "  Safari drops the cookie.".into(), "  See issue 42.".into()]));
+        assert_eq!(
+            texts,
+            [
+                ("Backlog", true),
+                ("  Fix login  (claude) · t-0003  ≡", false),
+                ("  Docs  (me)", false)
+            ]
+        );
+        let RowKind::Task(task) = &tasks[1].kind else {
+            panic!()
+        };
+        let Mode::Detail { title, lines, .. } = task_detail(task) else {
+            panic!()
+        };
+        assert_eq!(
+            (title.as_str(), lines),
+            (
+                "Fix login",
+                vec![
+                    "Backlog · claude".to_string(),
+                    String::new(),
+                    "  Safari drops the cookie.".into(),
+                    "  See issue 42.".into()
+                ]
+            )
+        );
         assert!(!build(&world.ctx(), Section::Memory, Some("demo")).is_empty());
         assert_eq!(summary(&world.root), "1 project · 1 need you");
     }
 
     fn rows() -> Vec<PickerRow> {
-        let row = |slug: Option<&str>, name: &str| PickerRow { slug: slug.map(String::from), name: name.into(), status: "idle".into() };
-        vec![row(None, "All projects"), row(Some("gtm-ai"), "GTM AI"), row(Some("herdr-projects"), "Herdr Projects"), row(Some("pi"), "pi")]
+        let row = |slug: Option<&str>, name: &str| PickerRow {
+            slug: slug.map(String::from),
+            name: name.into(),
+            status: "idle".into(),
+        };
+        vec![
+            row(None, "All projects"),
+            row(Some("gtm-ai"), "GTM AI"),
+            row(Some("herdr-projects"), "Herdr Projects"),
+            row(Some("pi"), "pi"),
+        ]
     }
 
     fn press(picker: &mut Picker, code: KeyCode) -> PickerOutcome {
@@ -1686,11 +2975,17 @@ mod tests {
         press(&mut picker, KeyCode::Down);
         assert_eq!(picker.selected, 3);
         press(&mut picker, KeyCode::Char('j'));
-        assert_eq!(picker.selected, 0, "wraps from the last row to All projects");
+        assert_eq!(
+            picker.selected, 0,
+            "wraps from the last row to All projects"
+        );
         press(&mut picker, KeyCode::Up);
         assert_eq!(picker.selected, 3, "wraps from the first row to the last");
         press(&mut picker, KeyCode::Char('k'));
-        assert_eq!(press(&mut picker, KeyCode::Enter), PickerOutcome::Pick(Some("herdr-projects".into())));
+        assert_eq!(
+            press(&mut picker, KeyCode::Enter),
+            PickerOutcome::Pick(Some("herdr-projects".into()))
+        );
         // All projects is the first row, and the scope when there is none.
         let mut all = Picker::new(rows(), None, false);
         assert_eq!(all.selected, 0);
@@ -1726,11 +3021,18 @@ mod tests {
         assert_eq!(picker.selected, 0);
         press(&mut picker, KeyCode::Down);
         press(&mut picker, KeyCode::Down);
-        assert_eq!(press(&mut picker, KeyCode::Enter), PickerOutcome::Pick(Some("pi".into())));
+        assert_eq!(
+            press(&mut picker, KeyCode::Enter),
+            PickerOutcome::Pick(Some("pi".into()))
+        );
         let mut picker = Picker::new(rows(), None, true);
         typed(&mut picker, "zz");
         assert_eq!(names(&picker), Vec::<&str>::new());
-        assert_eq!(press(&mut picker, KeyCode::Enter), PickerOutcome::Stay, "no match: nothing to pick");
+        assert_eq!(
+            press(&mut picker, KeyCode::Enter),
+            PickerOutcome::Stay,
+            "no match: nothing to pick"
+        );
     }
 
     #[test]
@@ -1740,7 +3042,10 @@ mod tests {
         assert_eq!(press(&mut picker, KeyCode::Esc), PickerOutcome::Stay);
         assert_eq!(picker.filter, None);
         assert_eq!(names(&picker).len(), 4);
-        assert_eq!(picker.selected, 1, "the match stays highlighted in the full list");
+        assert_eq!(
+            picker.selected, 1,
+            "the match stays highlighted in the full list"
+        );
         assert_eq!(press(&mut picker, KeyCode::Esc), PickerOutcome::Close);
         // An empty filter has nothing to clear: esc closes at once.
         let mut picker = Picker::new(rows(), None, true);
@@ -1759,7 +3064,10 @@ mod tests {
         let ctx = world.ctx();
         let mut popup = Popup::new(&ctx, None, String::new());
         let key = |popup: &mut Popup, code| popup.key(KeyEvent::new(code, KeyModifiers::NONE));
-        popup.section = SECTIONS.iter().position(|s| *s == Section::Settings).unwrap();
+        popup.section = SECTIONS
+            .iter()
+            .position(|s| *s == Section::Settings)
+            .unwrap();
         popup.reload();
         // `n`: the form; name, then harness codex (cycled), model, effort, args.
         key(&mut popup, KeyCode::Char('n'));
@@ -1786,7 +3094,16 @@ mod tests {
         assert!(matches!(popup.mode, Mode::List), "{}", popup.message);
         let config = crate::profiles::load(&ctx.config_dir).unwrap();
         let deep = config.get("deep").unwrap();
-        assert_eq!(deep.args(), ["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"high\"", "--search"]);
+        assert_eq!(
+            deep.args(),
+            [
+                "--model",
+                "gpt-5.5",
+                "-c",
+                "model_reasoning_effort=\"high\"",
+                "--search"
+            ]
+        );
 
         // The all-projects thread list: check `deep` only.
         popup.selected = popup.rows.iter().position(|r| matches!(&r.kind, RowKind::Setting { slug, key, .. } if slug.is_empty() && key == "thread_profiles")).unwrap();
@@ -1800,7 +3117,12 @@ mod tests {
         }
         key(&mut popup, KeyCode::Char(' '));
         key(&mut popup, KeyCode::Enter);
-        assert_eq!(project::load_safety(&ctx.config_dir, Path::new("")).unwrap().thread_profiles, Some(vec!["deep".to_string()]));
+        assert_eq!(
+            project::load_safety(&ctx.config_dir, Path::new(""))
+                .unwrap()
+                .thread_profiles,
+            Some(vec!["deep".to_string()])
+        );
     }
 
     #[test]
@@ -1817,7 +3139,9 @@ mod tests {
         for c in "bej".chars() {
             key(&mut popup, KeyCode::Char(c));
         }
-        assert!(matches!(&popup.mode, Mode::Projects(p) if p.filter.as_deref() == Some("bej") && p.visible().is_empty()));
+        assert!(
+            matches!(&popup.mode, Mode::Projects(p) if p.filter.as_deref() == Some("bej") && p.visible().is_empty())
+        );
         key(&mut popup, KeyCode::Backspace);
         key(&mut popup, KeyCode::Enter);
         assert!(matches!(popup.mode, Mode::List));
@@ -1835,10 +3159,17 @@ mod tests {
         key(&mut popup, KeyCode::Enter);
         assert_eq!(popup.scope, None);
         // The settings rows of all projects: ↵ on a project still scopes to it.
-        popup.section = SECTIONS.iter().position(|s| *s == Section::Settings).unwrap();
+        popup.section = SECTIONS
+            .iter()
+            .position(|s| *s == Section::Settings)
+            .unwrap();
         popup.reload();
         // Profile rows come first; the projects follow.
-        popup.selected = popup.rows.iter().position(|r| matches!(r.kind, RowKind::Project { .. })).unwrap();
+        popup.selected = popup
+            .rows
+            .iter()
+            .position(|r| matches!(r.kind, RowKind::Project { .. }))
+            .unwrap();
         key(&mut popup, KeyCode::Enter);
         assert_eq!(popup.scope.as_deref(), Some("alpha"));
     }
@@ -1852,12 +3183,22 @@ mod tests {
         let yolo = |p: &Project| p.safety(&ctx.config_dir).unwrap().yolo;
         let mut popup = Popup::new(&ctx, Some("alpha".into()), String::new());
         let key = |popup: &mut Popup, code| popup.key(KeyEvent::new(code, KeyModifiers::NONE));
-        popup.section = SECTIONS.iter().position(|s| *s == Section::Settings).unwrap();
+        popup.section = SECTIONS
+            .iter()
+            .position(|s| *s == Section::Settings)
+            .unwrap();
         popup.reload();
-        assert!(popup.rows.iter().any(|r| r.header && r.text.starts_with("safety")));
+        assert!(
+            popup
+                .rows
+                .iter()
+                .any(|r| r.header && r.text.starts_with("safety"))
+        );
         // Y asks before turning yolo on; n leaves it off.
         key(&mut popup, KeyCode::Char('Y'));
-        assert!(matches!(&popup.mode, Mode::Confirm { question, .. } if question.starts_with("Yolo for alpha?")));
+        assert!(
+            matches!(&popup.mode, Mode::Confirm { question, .. } if question.starts_with("Yolo for alpha?"))
+        );
         key(&mut popup, KeyCode::Char('n'));
         assert!(!yolo(&alpha));
         key(&mut popup, KeyCode::Char('Y'));
@@ -1872,27 +3213,44 @@ mod tests {
         // Unscoped, the rows are the all-projects defaults: ↵ on yolo picks.
         popup.scope = None;
         popup.reload();
-        popup.selected = popup.rows.iter().position(|r| matches!(&r.kind, RowKind::Safety { slug: None, key, .. } if key == "yolo")).unwrap();
+        popup.selected = popup
+            .rows
+            .iter()
+            .position(
+                |r| matches!(&r.kind, RowKind::Safety { slug: None, key, .. } if key == "yolo"),
+            )
+            .unwrap();
         key(&mut popup, KeyCode::Enter);
         assert!(matches!(&popup.mode, Mode::Pick { options, .. } if options == &["on", "off"]));
         key(&mut popup, KeyCode::Enter);
         assert!(yolo(&beta), "beta inherits the default");
         assert!(!yolo(&alpha), "alpha keeps its own off");
         // An argument row edits as text; empty means none.
-        popup.selected = popup.rows.iter().position(|r| matches!(&r.kind, RowKind::Safety { key, .. } if key == "thread_agent_args")).unwrap();
+        popup.selected = popup
+            .rows
+            .iter()
+            .position(
+                |r| matches!(&r.kind, RowKind::Safety { key, .. } if key == "thread_agent_args"),
+            )
+            .unwrap();
         key(&mut popup, KeyCode::Enter);
         for c in "--x".chars() {
             key(&mut popup, KeyCode::Char(c));
         }
         key(&mut popup, KeyCode::Enter);
-        assert_eq!(beta.safety(&ctx.config_dir).unwrap().thread_agent_args, ["--x"]);
+        assert_eq!(
+            beta.safety(&ctx.config_dir).unwrap().thread_agent_args,
+            ["--x"]
+        );
     }
 
     #[test]
     fn picker_rows_start_with_all_projects_and_leave_out_archived_ones() {
         let world = crate::scenarios::World::new();
         let project = world.project("demo", "a.sock");
-        world.thread(&project, world.home.path(), |t| t.last_group = "waiting-on-you".into());
+        world.thread(&project, world.home.path(), |t| {
+            t.last_group = "waiting-on-you".into()
+        });
         world.project("old", "a.sock");
         crate::lifecycle::set_status(&world.ctx(), "old", Status::Archived).ok();
         let rows = picker_rows(&world.root);

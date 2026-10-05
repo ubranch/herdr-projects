@@ -71,7 +71,12 @@ fn parse(screen: &str) -> Vec<Line> {
             '\n' => lines.push(std::mem::take(&mut line)),
             '\r' => {}
             c if c.is_control() => {}
-            c => line.push(Cell { ch: c, dim, reverse, bg: bg.clone() }),
+            c => line.push(Cell {
+                ch: c,
+                dim,
+                reverse,
+                bg: bg.clone(),
+            }),
         }
     }
     if !line.is_empty() {
@@ -81,7 +86,11 @@ fn parse(screen: &str) -> Vec<Line> {
 }
 
 fn sgr(params: &str, dim: &mut bool, reverse: &mut bool, bg: &mut String) {
-    let codes: Vec<&str> = if params.is_empty() { vec!["0"] } else { params.split(';').collect() };
+    let codes: Vec<&str> = if params.is_empty() {
+        vec!["0"]
+    } else {
+        params.split(';').collect()
+    };
     let mut i = 0;
     while i < codes.len() {
         match codes[i] {
@@ -152,7 +161,14 @@ fn typed(cells: &[Cell]) -> String {
 /// The input box's cells, one entry per line, or `None` when it is not on
 /// the screen.
 fn input_box(kind: &str, lines: &[Line]) -> Option<Vec<Line>> {
-    let last = |pred: &dyn Fn(usize, &Line) -> bool| lines.iter().enumerate().rev().find(|(i, l)| pred(*i, l)).map(|(i, _)| i);
+    let last = |pred: &dyn Fn(usize, &Line) -> bool| {
+        lines
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(i, l)| pred(*i, l))
+            .map(|(i, _)| i)
+    };
     match kind {
         // `❯` right under a rule, continued until the next rule.
         "claude" => {
@@ -162,14 +178,22 @@ fn input_box(kind: &str, lines: &[Line]) -> Option<Vec<Line>> {
             rows.extend(lines[at + 1..end].iter().cloned());
             Some(rows)
         }
-        "codex" => last(&|_, l| trimmed_starts(l, "›")).and_then(|at| after(&lines[at], '›')).map(|row| vec![row]),
-        "cursor" => last(&|_, l| trimmed_starts(l, "→")).and_then(|at| after(&lines[at], '→')).map(|row| vec![row]),
+        "codex" => last(&|_, l| trimmed_starts(l, "›"))
+            .and_then(|at| after(&lines[at], '›'))
+            .map(|row| vec![row]),
+        "cursor" => last(&|_, l| trimmed_starts(l, "→"))
+            .and_then(|at| after(&lines[at], '→'))
+            .map(|row| vec![row]),
         // `│ > ` (or `!` shell mode, `*` yolo mode) in a bordered box.
         "gemini" => {
             let at = last(&|_, l| {
                 let t = text(l);
                 let t = t.trim_start();
-                t.starts_with('│') && matches!(t['│'.len_utf8()..].trim_start().chars().next(), Some('>' | '!' | '*'))
+                t.starts_with('│')
+                    && matches!(
+                        t['│'.len_utf8()..].trim_start().chars().next(),
+                        Some('>' | '!' | '*')
+                    )
             })?;
             let end = (at + 1..lines.len()).find(|&i| trimmed_starts(&lines[i], "╰"))?;
             let mut rows = Vec::new();
@@ -191,7 +215,10 @@ fn input_box(kind: &str, lines: &[Line]) -> Option<Vec<Line>> {
         // so the session sidebar to its right is left out.
         "opencode" => {
             let bottom = last(&|_, l| trimmed_starts(l, "╹"))?;
-            let top = (0..bottom).rev().take_while(|&i| trimmed_starts(&lines[i], "┃")).last()?;
+            let top = (0..bottom)
+                .rev()
+                .take_while(|&i| trimmed_starts(&lines[i], "┃"))
+                .last()?;
             if bottom - top < 2 {
                 return None;
             }
@@ -230,7 +257,11 @@ pub fn check(kind: &str, screen: &str) -> Draft {
 pub fn box_text(kind: &str, screen: &str) -> Option<String> {
     let lines = parse(screen);
     let rows = input_box(kind, &lines)?;
-    let typed: Vec<String> = rows.iter().map(|row| typed(row).trim().to_string()).filter(|t| !t.is_empty()).collect();
+    let typed: Vec<String> = rows
+        .iter()
+        .map(|row| typed(row).trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
     match typed.as_slice() {
         [only] if placeholders(kind).iter().any(|p| only.starts_with(p)) => Some(String::new()),
         _ => Some(typed.join(" ")),
@@ -239,12 +270,19 @@ pub fn box_text(kind: &str, screen: &str) -> Option<String> {
 
 /// True for the kinds whose input box this module can find.
 pub fn knows(kind: &str) -> bool {
-    matches!(kind, "claude" | "codex" | "cursor" | "gemini" | "opencode" | "pi")
+    matches!(
+        kind,
+        "claude" | "codex" | "cursor" | "gemini" | "opencode" | "pi"
+    )
 }
 
 /// The screen's plain text, styling dropped.
 pub fn plain(screen: &str) -> String {
-    parse(screen).iter().map(|line| text(line)).collect::<Vec<_>>().join("\n")
+    parse(screen)
+        .iter()
+        .map(|line| text(line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -252,23 +290,44 @@ mod tests {
     use super::*;
 
     fn fixture(name: &str) -> String {
-        std::fs::read_to_string(format!("{}/tests/fixtures/prompt_box/{name}.ansi", env!("CARGO_MANIFEST_DIR"))).unwrap()
+        std::fs::read_to_string(format!(
+            "{}/tests/fixtures/prompt_box/{name}.ansi",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap()
     }
 
     #[test]
     fn every_supported_kind_tells_an_empty_box_from_a_draft() {
         for kind in ["claude", "codex", "cursor", "gemini", "opencode", "pi"] {
-            assert_eq!(check(kind, &fixture(&format!("{kind}-empty"))), Draft::Empty, "{kind} empty");
-            assert_eq!(check(kind, &fixture(&format!("{kind}-draft"))), Draft::Typed, "{kind} draft");
+            assert_eq!(
+                check(kind, &fixture(&format!("{kind}-empty"))),
+                Draft::Empty,
+                "{kind} empty"
+            );
+            assert_eq!(
+                check(kind, &fixture(&format!("{kind}-draft"))),
+                Draft::Typed,
+                "{kind} draft"
+            );
         }
-        assert_eq!(check("claude", &fixture("claude-empty-after-turn")), Draft::Empty);
-        assert_eq!(check("opencode", &fixture("opencode-empty-session")), Draft::Empty);
+        assert_eq!(
+            check("claude", &fixture("claude-empty-after-turn")),
+            Draft::Empty
+        );
+        assert_eq!(
+            check("opencode", &fixture("opencode-empty-session")),
+            Draft::Empty
+        );
     }
 
     #[test]
     fn a_screen_without_the_box_or_an_unknown_kind_is_unknown() {
         assert_eq!(check("copilot", &fixture("claude-empty")), Draft::Unknown);
-        assert_eq!(check("claude", "some output\nno box here\n"), Draft::Unknown);
+        assert_eq!(
+            check("claude", "some output\nno box here\n"),
+            Draft::Unknown
+        );
         assert_eq!(check("codex", &fixture("claude-empty")), Draft::Unknown);
     }
 
@@ -292,7 +351,16 @@ mod tests {
         // One typed character with the harness cursor on it is text, while a
         // cursor on a dim placeholder is not.
         let rule = "─".repeat(40);
-        assert_eq!(check("pi", &format!("{rule}\n\u{1b}[7mx\u{1b}[0m   \n{rule}\n")), Draft::Typed);
-        assert_eq!(check("cursor", "  \u{1b}[2m→ \u{1b}[0m\u{1b}[7mP\u{1b}[0m\u{1b}[2mlan, search\u{1b}[0m\n"), Draft::Empty);
+        assert_eq!(
+            check("pi", &format!("{rule}\n\u{1b}[7mx\u{1b}[0m   \n{rule}\n")),
+            Draft::Typed
+        );
+        assert_eq!(
+            check(
+                "cursor",
+                "  \u{1b}[2m→ \u{1b}[0m\u{1b}[7mP\u{1b}[0m\u{1b}[2mlan, search\u{1b}[0m\n"
+            ),
+            Draft::Empty
+        );
     }
 }

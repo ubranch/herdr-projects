@@ -35,7 +35,19 @@ pub fn tokens() -> Vec<String> {
 /// rails. Cleared with a pane's or Space's own tokens, and otherwise left to
 /// expire (they had a TTL and have no rows any more).
 pub fn legacy() -> Vec<String> {
-    let mut all: Vec<String> = ["hp_top", "hp_other", "hp_note", "hp_tail", "hp", "hp_state", "hp_activity", "hp_gap", "hp_home"].map(String::from).to_vec();
+    let mut all: Vec<String> = [
+        "hp_top",
+        "hp_other",
+        "hp_note",
+        "hp_tail",
+        "hp",
+        "hp_state",
+        "hp_activity",
+        "hp_gap",
+        "hp_home",
+    ]
+    .map(String::from)
+    .to_vec();
     for slot in ["top", "con", "sub", "end"] {
         for rail in ["n", "w", "i", "o"] {
             all.push(format!("hp_{slot}_{rail}"));
@@ -111,7 +123,13 @@ pub fn plan(parts: &Parts, agents: &[Agent], workspaces: &[Workspace]) -> Plan {
         .collect();
     rows.sort_by(|a, b| a.0.cmp(&b.0));
     for (key, pane, sub) in rows {
-        let tokens = vec![("hp_sub".to_string(), (!sub.is_empty()).then(|| sub.to_string())), ("hp_group".to_string(), Some(key))];
+        let tokens = vec![
+            (
+                "hp_sub".to_string(),
+                (!sub.is_empty()).then(|| sub.to_string()),
+            ),
+            ("hp_group".to_string(), Some(key)),
+        ];
         out.agents.push((pane.to_string(), tokens));
     }
 
@@ -131,7 +149,10 @@ pub fn plan(parts: &Parts, agents: &[Agent], workspaces: &[Workspace]) -> Plan {
         })
         .collect();
     ordered.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
-    out.order = ordered.iter().map(|(_, _, w)| w.workspace_id.clone()).collect();
+    out.order = ordered
+        .iter()
+        .map(|(_, _, w)| w.workspace_id.clone())
+        .collect();
     out
 }
 
@@ -156,7 +177,11 @@ pub fn moves(current: &[String], wanted: &[String]) -> Vec<(String, usize)> {
 /// Home Spaces whose label lacks [`HOME_MARK`] (made before 0.2.19, or
 /// renamed by hand): `(id, label with the mark)`.
 pub fn unmarked_homes(parts: &Parts, workspaces: &[Workspace]) -> Vec<(String, String)> {
-    let homes: HashSet<&str> = parts.values().map(|p| p.home.as_str()).filter(|h| !h.is_empty()).collect();
+    let homes: HashSet<&str> = parts
+        .values()
+        .map(|p| p.home.as_str())
+        .filter(|h| !h.is_empty())
+        .collect();
     workspaces
         .iter()
         .filter(|w| homes.contains(w.workspace_id.as_str()))
@@ -190,7 +215,18 @@ const PER_REPORT: usize = 16;
 pub fn report(herdr: &Herdr, kind: &str, id: &str, tokens: &Tokens) {
     let ttl = crate::sidebar::TOKEN_TTL_MS.to_string();
     for chunk in tokens.chunks(PER_REPORT) {
-        let mut args: Vec<String> = [kind, "report-metadata", id, "--source", crate::herdr::SOURCE, "--ttl-ms", &ttl].iter().map(|s| s.to_string()).collect();
+        let mut args: Vec<String> = [
+            kind,
+            "report-metadata",
+            id,
+            "--source",
+            crate::herdr::SOURCE,
+            "--ttl-ms",
+            &ttl,
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         for (name, value) in chunk {
             match value {
                 Some(value) => args.extend(["--token".to_string(), format!("{name}={value}")]),
@@ -207,7 +243,11 @@ pub fn clear(herdr: &Herdr, kind: &str, id: &str) {
     if id.is_empty() {
         return;
     }
-    let all: Tokens = tokens().into_iter().chain(legacy()).map(|t| (t, None)).collect();
+    let all: Tokens = tokens()
+        .into_iter()
+        .chain(legacy())
+        .map(|t| (t, None))
+        .collect();
     report(herdr, kind, id, &all);
 }
 
@@ -246,21 +286,44 @@ mod tests {
     use crate::herdr::WorkspaceWorktree;
 
     fn agent(pane: &str) -> Agent {
-        Agent { pane_id: pane.into(), ..Agent::default() }
+        Agent {
+            pane_id: pane.into(),
+            ..Agent::default()
+        }
     }
 
     fn space(id: &str, repo: &str, linked: bool) -> Workspace {
-        let worktree = (!repo.is_empty()).then(|| WorkspaceWorktree { repo_key: repo.into(), checkout_path: String::new(), is_linked_worktree: linked });
-        Workspace { workspace_id: id.into(), label: id.into(), worktree, ..Workspace::default() }
+        let worktree = (!repo.is_empty()).then(|| WorkspaceWorktree {
+            repo_key: repo.into(),
+            checkout_path: String::new(),
+            is_linked_worktree: linked,
+        });
+        Workspace {
+            workspace_id: id.into(),
+            label: id.into(),
+            worktree,
+            ..Workspace::default()
+        }
     }
 
     fn row(pane: &str, key: String, sub: &str) -> PaneRow {
-        PaneRow { pane: pane.into(), key, sub: sub.into() }
+        PaneRow {
+            pane: pane.into(),
+            key,
+            sub: sub.into(),
+        }
     }
 
     fn parts() -> Parts {
         let mut parts = Parts::new();
-        parts.insert("beta".into(), ProjectPart { panes: vec![row("b1", coordinator_key("beta", "b1"), "")], home: "wb".into(), spaces: vec!["wb".into()] });
+        parts.insert(
+            "beta".into(),
+            ProjectPart {
+                panes: vec![row("b1", coordinator_key("beta", "b1"), "")],
+                home: "wb".into(),
+                spaces: vec!["wb".into()],
+            },
+        );
         parts.insert(
             "alpha".into(),
             ProjectPart {
@@ -277,23 +340,43 @@ mod tests {
     }
 
     fn get<'a>(tokens: &'a Tokens, name: &str) -> Option<&'a str> {
-        tokens.iter().find(|(n, _)| n == name).and_then(|(_, v)| v.as_deref())
+        tokens
+            .iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, v)| v.as_deref())
     }
 
     #[test]
     fn agents_sort_into_projects_with_their_own_sub_lines_and_others_last() {
-        let agents: Vec<Agent> = ["x1", "a2", "b1", "a3", "x2", "a1"].into_iter().map(agent).collect();
+        let agents: Vec<Agent> = ["x1", "a2", "b1", "a3", "x2", "a1"]
+            .into_iter()
+            .map(agent)
+            .collect();
         let layout = plan(&parts(), &agents, &[]);
         let order: Vec<&str> = layout.agents.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(order, ["a1", "a3", "a2", "b1", "x1", "x2"]);
-        let t: HashMap<&str, &Tokens> = layout.agents.iter().map(|(p, t)| (p.as_str(), t)).collect();
+        let t: HashMap<&str, &Tokens> =
+            layout.agents.iter().map(|(p, t)| (p.as_str(), t)).collect();
         assert_eq!(get(t["a3"], "hp_sub"), Some("review · report"));
-        assert_eq!(get(t["a1"], "hp_sub"), None, "an empty sub-line is cleared, so no row is drawn");
+        assert_eq!(
+            get(t["a1"], "hp_sub"),
+            None,
+            "an empty sub-line is cleared, so no row is drawn"
+        );
         assert!(t["a1"].iter().any(|(n, v)| n == "hp_sub" && v.is_none()));
         // No card carries a row of ours besides its own sub-line.
-        assert!(layout.agents.iter().all(|(_, t)| t.iter().all(|(n, _)| n == "hp_sub" || n == "hp_group")));
+        assert!(
+            layout
+                .agents
+                .iter()
+                .all(|(_, t)| t.iter().all(|(n, _)| n == "hp_sub" || n == "hp_group"))
+        );
         // The sort key the agent view uses reproduces this order.
-        let keys: Vec<&str> = layout.agents.iter().map(|(_, t)| get(t, "hp_group").unwrap()).collect();
+        let keys: Vec<&str> = layout
+            .agents
+            .iter()
+            .map(|(_, t)| get(t, "hp_group").unwrap())
+            .collect();
         let mut sorted = keys.clone();
         sorted.sort();
         assert_eq!(keys, sorted);
@@ -311,7 +394,10 @@ mod tests {
             space("other2", "", false),
         ];
         let layout = plan(&parts(), &[], &workspaces);
-        assert_eq!(layout.order, ["wa", "repo", "wt2", "wt3", "wb", "mine", "other2"]);
+        assert_eq!(
+            layout.order,
+            ["wa", "repo", "wt2", "wt3", "wb", "mine", "other2"]
+        );
     }
 
     #[test]
@@ -320,16 +406,31 @@ mod tests {
         marked.label = format!("Beta{HOME_MARK}");
         let mut plain = space("wa", "", false);
         plain.label = "Alpha".into();
-        assert_eq!(unmarked_homes(&parts(), &[plain, marked, space("repo", "r", false)]), [("wa".to_string(), format!("Alpha{HOME_MARK}"))]);
+        assert_eq!(
+            unmarked_homes(&parts(), &[plain, marked, space("repo", "r", false)]),
+            [("wa".to_string(), format!("Alpha{HOME_MARK}"))]
+        );
     }
 
     #[test]
     fn clearing_covers_every_earlier_layout_and_fits_herdrs_token_limit_in_chunks() {
         let all = legacy();
-        for old in ["hp_top", "hp_top_w", "hp_end_o", "hp_con_n", "hp_sub_i", "hp_gap", "hp_home", "hp_activity"] {
+        for old in [
+            "hp_top",
+            "hp_top_w",
+            "hp_end_o",
+            "hp_con_n",
+            "hp_sub_i",
+            "hp_gap",
+            "hp_home",
+            "hp_activity",
+        ] {
             assert!(all.iter().any(|t| t == old), "{old}");
         }
-        assert!(tokens().len() + all.len() > PER_REPORT, "the chunking in report() is needed");
+        assert!(
+            tokens().len() + all.len() > PER_REPORT,
+            "the chunking in report() is needed"
+        );
         assert!(all.iter().all(|t| !tokens().contains(t)));
     }
 
@@ -354,6 +455,9 @@ mod tests {
 
     #[test]
     fn no_project_means_no_layout() {
-        assert_eq!(plan(&Parts::new(), &[agent("x")], &[space("w", "", false)]), Plan::default());
+        assert_eq!(
+            plan(&Parts::new(), &[agent("x")], &[space("w", "", false)]),
+            Plan::default()
+        );
     }
 }

@@ -19,12 +19,28 @@ fn context_prints_a_usable_prefix_in_a_scrubbed_environment() {
     let home = tempfile::tempdir().unwrap();
     let root = home.path().join("my root's café");
     let root_arg = root.to_str().unwrap();
-    assert!(hp(home.path(), &["--root", root_arg, "new", "Demo"]).status.success());
+    assert!(
+        hp(home.path(), &["--root", root_arg, "new", "Demo"])
+            .status
+            .success()
+    );
 
-    let out = hp(home.path(), &["--root", root_arg, "context", "demo", "--peek"]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = hp(
+        home.path(),
+        &["--root", root_arg, "context", "demo", "--peek"],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let text = String::from_utf8(out.stdout).unwrap();
-    let prefix = text.lines().next().unwrap().strip_prefix("Commands: ").unwrap();
+    let prefix = text
+        .lines()
+        .next()
+        .unwrap()
+        .strip_prefix("Commands: ")
+        .unwrap();
 
     // Execute the printed command, including quoted paths, in the native shell.
     #[cfg(unix)]
@@ -54,8 +70,15 @@ fn context_prints_a_usable_prefix_in_a_scrubbed_environment() {
         .arg(format!("{prefix} list"))
         .output()
         .unwrap();
-    assert!(listed.status.success(), "{}", String::from_utf8_lossy(&listed.stderr));
-    assert_eq!(String::from_utf8_lossy(&listed.stdout), "demo\tactive\tno threads\n");
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&listed.stdout),
+        "demo\tactive\tno threads\n"
+    );
 }
 
 #[test]
@@ -63,15 +86,38 @@ fn peek_records_nothing_and_context_records_seen_items() {
     let home = tempfile::tempdir().unwrap();
     let root = home.path().join("root");
     let root_arg = root.to_str().unwrap();
-    assert!(hp(home.path(), &["--root", root_arg, "new", "demo"]).status.success());
+    assert!(
+        hp(home.path(), &["--root", root_arg, "new", "demo"])
+            .status
+            .success()
+    );
     let item = "+++\nid = \"20260917T000000Z-routine-r-1\"\nkind = \"routine\"\nsubject = \"r\"\ncreated = \"x\"\nsummary = \"s\"\n+++\n";
-    std::fs::write(root.join("demo/inbox/20260917T000000Z-routine-r-1.md"), item).unwrap();
+    std::fs::write(
+        root.join("demo/inbox/20260917T000000Z-routine-r-1.md"),
+        item,
+    )
+    .unwrap();
     let seen = root.join("demo/.state/inbox-seen.json");
 
-    assert!(hp(home.path(), &["--root", root_arg, "context", "demo", "--peek"]).status.success());
+    assert!(
+        hp(
+            home.path(),
+            &["--root", root_arg, "context", "demo", "--peek"]
+        )
+        .status
+        .success()
+    );
     assert!(!seen.exists());
-    assert!(hp(home.path(), &["--root", root_arg, "context", "demo"]).status.success());
-    assert!(std::fs::read_to_string(&seen).unwrap().contains("routine-r-1"));
+    assert!(
+        hp(home.path(), &["--root", root_arg, "context", "demo"])
+            .status
+            .success()
+    );
+    assert!(
+        std::fs::read_to_string(&seen)
+            .unwrap()
+            .contains("routine-r-1")
+    );
 }
 
 #[test]
@@ -79,11 +125,34 @@ fn path_like_names_and_slugs_are_refused() {
     let home = tempfile::tempdir().unwrap();
     let root = home.path().join("root");
     let root_arg = root.to_str().unwrap();
-    assert!(!hp(home.path(), &["--root", root_arg, "new", "../x"]).status.success());
-    assert!(!hp(home.path(), &["--root", root_arg, "open", "../x"]).status.success());
-    assert!(!hp(home.path(), &["--root", root_arg, "context", "../x"]).status.success());
-    assert!(!hp(home.path(), &["--root", root_arg, "thread", "list", "../x"]).status.success());
-    assert!(!hp(home.path(), &["--root", root_arg, "delete", "../x", "--force"]).status.success());
+    assert!(
+        !hp(home.path(), &["--root", root_arg, "new", "../x"])
+            .status
+            .success()
+    );
+    assert!(
+        !hp(home.path(), &["--root", root_arg, "open", "../x"])
+            .status
+            .success()
+    );
+    assert!(
+        !hp(home.path(), &["--root", root_arg, "context", "../x"])
+            .status
+            .success()
+    );
+    assert!(
+        !hp(home.path(), &["--root", root_arg, "thread", "list", "../x"])
+            .status
+            .success()
+    );
+    assert!(
+        !hp(
+            home.path(),
+            &["--root", root_arg, "delete", "../x", "--force"]
+        )
+        .status
+        .success()
+    );
     assert!(!root.exists());
     assert!(!home.path().join("x").exists());
 }
@@ -109,9 +178,24 @@ fn windows_uses_userprofile_when_home_is_unset() {
             .unwrap()
     };
     let created = run(&["new", "Native Home"]);
-    assert!(created.status.success(), "{}", String::from_utf8_lossy(&created.stderr));
-    assert!(home.path().join(".herdr-projects/native-home/PROJECT.md").is_file());
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    assert!(
+        home.path()
+            .join(".herdr-projects/native-home/PROJECT.md")
+            .is_file()
+    );
     let listed = run(&["list"]);
-    assert!(listed.status.success(), "{}", String::from_utf8_lossy(&listed.stderr));
-    assert_eq!(String::from_utf8_lossy(&listed.stdout), "native-home\tactive\tno threads\n");
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&listed.stdout),
+        "native-home\tactive\tno threads\n"
+    );
 }

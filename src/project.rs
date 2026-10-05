@@ -20,7 +20,9 @@ pub fn validate_slug(slug: &str) -> Result<()> {
         .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
     let rest_ok = chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
     if !first_ok || !rest_ok || slug.len() > MAX_SLUG {
-        bail!("`{slug}` is not a valid slug (lower-case letters, digits and hyphens, at most {MAX_SLUG} characters)");
+        bail!(
+            "`{slug}` is not a valid slug (lower-case letters, digits and hyphens, at most {MAX_SLUG} characters)"
+        );
     }
     Ok(())
 }
@@ -64,7 +66,10 @@ pub fn humanize(slug: &str) -> String {
         .filter(|word| !word.is_empty())
         .map(|word| {
             let mut chars = word.chars();
-            chars.next().map(|first| first.to_uppercase().chain(chars).collect::<String>()).unwrap_or_default()
+            chars
+                .next()
+                .map(|first| first.to_uppercase().chain(chars).collect::<String>())
+                .unwrap_or_default()
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -77,8 +82,14 @@ pub fn humanize(slug: &str) -> String {
 pub fn display_name(name: &str, slug: &str) -> String {
     let name = name.trim();
     let base = if name.is_empty() { slug } else { name };
-    let slug_like = base.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
-    if slug_like { humanize(base) } else { base.to_string() }
+    let slug_like = base
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+    if slug_like {
+        humanize(base)
+    } else {
+        base.to_string()
+    }
 }
 
 /// The label of a project's home Space: its display name plus
@@ -94,7 +105,9 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     let dir = path.parent().context("path has no parent")?;
     let name = path.file_name().context("path has no file name")?;
     #[cfg(windows)]
-    let previous_agents = (name == "AGENTS.md").then(|| std::fs::read(path).ok()).flatten();
+    let previous_agents = (name == "AGENTS.md")
+        .then(|| std::fs::read(path).ok())
+        .flatten();
     let tmp = dir.join(format!(
         ".{}.{}.tmp",
         name.to_string_lossy(),
@@ -122,10 +135,12 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
 fn sync_claude(dir: &Path, contents: &[u8], previous_agents: Option<&[u8]>) -> Result<()> {
     let claude = dir.join("CLAUDE.md");
     if let Ok(meta) = std::fs::symlink_metadata(&claude) {
-        let owned_link = std::fs::read_link(&claude).is_ok_and(|target| target == Path::new("AGENTS.md"));
-        let owned_copy = meta.is_file() && std::fs::read(&claude).is_ok_and(|bytes| {
-            previous_agents == Some(bytes.as_slice()) || bytes.as_slice() == contents
-        });
+        let owned_link =
+            std::fs::read_link(&claude).is_ok_and(|target| target == Path::new("AGENTS.md"));
+        let owned_copy = meta.is_file()
+            && std::fs::read(&claude).is_ok_and(|bytes| {
+                previous_agents == Some(bytes.as_slice()) || bytes.as_slice() == contents
+            });
         if !owned_link && !owned_copy {
             preserve_foreign_claude(&claude)?;
         } else if meta.file_type().is_symlink() {
@@ -145,7 +160,8 @@ fn preserve_foreign_claude(claude: &Path) -> Result<()> {
             kept.display()
         ),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::rename(claude, &kept).with_context(|| format!("could not preserve {}", claude.display()))
+            std::fs::rename(claude, &kept)
+                .with_context(|| format!("could not preserve {}", claude.display()))
         }
         Err(error) => Err(error).with_context(|| format!("could not inspect {}", kept.display())),
     }
@@ -218,7 +234,8 @@ pub fn parse_project_md(text: &str) -> Result<(Settings, String)> {
             .map(|front| (front, ""))
             .context("PROJECT.md front matter has no closing `+++` line")?,
     };
-    let settings: Settings = toml::from_str(front).context("PROJECT.md front matter does not parse")?;
+    let settings: Settings =
+        toml::from_str(front).context("PROJECT.md front matter does not parse")?;
     Ok((settings, body.trim_start_matches('\n').to_string()))
 }
 
@@ -397,7 +414,7 @@ impl Project {
     /// The canonical folder (symlinks resolved): the key of the project's
     /// `[safety]` table and of its routine approvals.
     pub fn canonical_dir(&self) -> PathBuf {
-        crate::paths::canonicalize(&self.dir()).unwrap_or_else(|_| self.dir())
+        crate::paths::canonicalize(self.dir()).unwrap_or_else(|_| self.dir())
     }
 
     /// Takes the per-project token outside the movable folder. The project
@@ -419,20 +436,34 @@ impl Project {
             bail!("`{slug}` already has that slug");
         }
         let (_first, _second) = if self.slug.as_str() < slug {
-            (lock_slug(&self.root, &self.slug)?, lock_slug(&self.root, slug)?)
+            (
+                lock_slug(&self.root, &self.slug)?,
+                lock_slug(&self.root, slug)?,
+            )
         } else {
-            (lock_slug(&self.root, slug)?, lock_slug(&self.root, &self.slug)?)
+            (
+                lock_slug(&self.root, slug)?,
+                lock_slug(&self.root, &self.slug)?,
+            )
         };
         if !self.project_md().is_file() {
             bail!("project `{}` is gone", self.slug);
         }
-        let moved = Project { root: self.root.clone(), slug: slug.to_string() };
+        let moved = Project {
+            root: self.root.clone(),
+            slug: slug.to_string(),
+        };
         let target = moved.dir();
         if std::fs::symlink_metadata(&target).is_ok() {
             bail!("`{slug}` is taken: {} already exists", target.display());
         }
-        std::fs::rename(self.dir(), &target)
-            .with_context(|| format!("could not move {} to {}", self.dir().display(), target.display()))?;
+        std::fs::rename(self.dir(), &target).with_context(|| {
+            format!(
+                "could not move {} to {}",
+                self.dir().display(),
+                target.display()
+            )
+        })?;
         moved.record_former_slug(&self.slug)?;
         Ok(moved)
     }
@@ -476,7 +507,10 @@ impl Project {
     /// The branch prefixes of this project's threads: `hp/<slug>/` for the
     /// slug and for each former one.
     pub fn branch_prefixes(&self) -> Vec<String> {
-        std::iter::once(self.slug.clone()).chain(self.former_slugs()).map(|s| format!("hp/{s}/")).collect()
+        std::iter::once(self.slug.clone())
+            .chain(self.former_slugs())
+            .map(|s| format!("hp/{s}/"))
+            .collect()
     }
 
     pub fn coordinator(&self) -> Option<Coordinator> {
@@ -518,11 +552,29 @@ pub fn load_safety(config_dir: &Path, canonical_project_dir: &Path) -> Result<Sa
     let base = Safety::default();
     let yolo = own.yolo.or(default.yolo).unwrap_or(base.yolo);
     Ok(Safety {
-        start_threads: if yolo { "auto".into() } else { own.start_threads.or(default.start_threads).unwrap_or(base.start_threads) },
-        coordinator_agent_args: own.coordinator_agent_args.or(default.coordinator_agent_args).unwrap_or_default(),
-        thread_agent_args: own.thread_agent_args.or(default.thread_agent_args).unwrap_or_default(),
-        routine_commands: own.routine_commands.or(default.routine_commands).unwrap_or(base.routine_commands),
-        trust_screens: own.trust_screens.or(default.trust_screens).unwrap_or_else(|| default_trust_screens(yolo).into()),
+        start_threads: if yolo {
+            "auto".into()
+        } else {
+            own.start_threads
+                .or(default.start_threads)
+                .unwrap_or(base.start_threads)
+        },
+        coordinator_agent_args: own
+            .coordinator_agent_args
+            .or(default.coordinator_agent_args)
+            .unwrap_or_default(),
+        thread_agent_args: own
+            .thread_agent_args
+            .or(default.thread_agent_args)
+            .unwrap_or_default(),
+        routine_commands: own
+            .routine_commands
+            .or(default.routine_commands)
+            .unwrap_or(base.routine_commands),
+        trust_screens: own
+            .trust_screens
+            .or(default.trust_screens)
+            .unwrap_or_else(|| default_trust_screens(yolo).into()),
         yolo,
         thread_profiles: own.thread_profiles.or(default.thread_profiles),
         coordinator_profiles: own.coordinator_profiles.or(default.coordinator_profiles),
@@ -532,12 +584,19 @@ pub fn load_safety(config_dir: &Path, canonical_project_dir: &Path) -> Result<Sa
 /// Who answers trust screens when `trust_screens` is not set: the
 /// coordinator in yolo mode, the user otherwise.
 pub fn default_trust_screens(yolo: bool) -> &'static str {
-    if yolo { crate::trust_screen::COORDINATOR } else { crate::trust_screen::USER }
+    if yolo {
+        crate::trust_screen::COORDINATOR
+    } else {
+        crate::trust_screen::USER
+    }
 }
 
 /// The `[safety.default]` table and the project's own table, as written.
 /// `canonical_project_dir` empty reads only the default table.
-pub fn load_safety_layers(config_dir: &Path, canonical_project_dir: &Path) -> Result<(SafetyLayer, SafetyLayer)> {
+pub fn load_safety_layers(
+    config_dir: &Path,
+    canonical_project_dir: &Path,
+) -> Result<(SafetyLayer, SafetyLayer)> {
     let file = config_dir.join("config.toml");
     let Ok(text) = std::fs::read_to_string(&file) else {
         return Ok(Default::default());
@@ -546,14 +605,22 @@ pub fn load_safety_layers(config_dir: &Path, canonical_project_dir: &Path) -> Re
 }
 
 /// [`load_safety_layers`] on config.toml's `text`; `file` names it in errors.
-pub fn load_safety_layers_from(text: &str, file: &str, canonical_project_dir: &Path) -> Result<(SafetyLayer, SafetyLayer)> {
+pub fn load_safety_layers_from(
+    text: &str,
+    file: &str,
+    canonical_project_dir: &Path,
+) -> Result<(SafetyLayer, SafetyLayer)> {
     #[derive(Deserialize, Default)]
     struct Config {
         #[serde(default)]
         safety: std::collections::BTreeMap<String, SafetyLayer>,
     }
-    let mut config: Config = toml::from_str(text).with_context(|| format!("{file} does not parse"))?;
-    let default = config.safety.remove(crate::safety::DEFAULT_TABLE).unwrap_or_default();
+    let mut config: Config =
+        toml::from_str(text).with_context(|| format!("{file} does not parse"))?;
+    let default = config
+        .safety
+        .remove(crate::safety::DEFAULT_TABLE)
+        .unwrap_or_default();
     let own = config
         .safety
         .remove(&*canonical_project_dir.to_string_lossy())
@@ -625,7 +692,17 @@ popup or by asking the coordinator.
 
 /// The folders every project has. `uploads/` is yours (files for threads),
 /// `library/` holds what threads produced.
-pub const SUBDIRS: [&str; 9] = ["memory", "scratch", "routines", "threads", "inbox", "inbox/done", "library", "uploads", ".state"];
+pub const SUBDIRS: [&str; 9] = [
+    "memory",
+    "scratch",
+    "routines",
+    "threads",
+    "inbox",
+    "inbox/done",
+    "library",
+    "uploads",
+    ".state",
+];
 
 /// The text of `AGENTS.md`. Harnesses load it from every ancestor of their
 /// working directory, and tab threads run under `threads/<id>/`, so it says
@@ -643,7 +720,9 @@ pub fn agents_md(name: &str, slug: &str, prefix: &str) -> String {
 /// The command prefix `AGENTS.md` carries, so `doctor` can check that its
 /// binary still exists.
 pub fn prefix_in_agents_md(text: &str) -> Option<String> {
-    let line = text.lines().find(|l| l.starts_with("If your working directory is exactly this folder"))?;
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("If your working directory is exactly this folder"))?;
     let start = line.find('`')? + 1;
     let rest = &line[start..];
     let end = rest.find(" skill`")?;
@@ -688,12 +767,14 @@ pub fn write_priming(project: &Project, prefix: &str) -> Result<()> {
     #[cfg(unix)]
     {
         let claude = dir.join("CLAUDE.md");
-        let link_ok = std::fs::read_link(&claude).is_ok_and(|target| target == Path::new("AGENTS.md"));
+        let link_ok =
+            std::fs::read_link(&claude).is_ok_and(|target| target == Path::new("AGENTS.md"));
         if !link_ok {
             if std::fs::symlink_metadata(&claude).is_ok() {
                 preserve_foreign_claude(&claude)?;
             }
-            std::os::unix::fs::symlink("AGENTS.md", &claude).with_context(|| format!("could not link {}", claude.display()))?;
+            std::os::unix::fs::symlink("AGENTS.md", &claude)
+                .with_context(|| format!("could not link {}", claude.display()))?;
         }
     }
     if !dir.join("uploads").is_dir() {
@@ -714,7 +795,9 @@ pub fn priming_problems(project: &Project, prefix: &str) -> Vec<String> {
             Some(found) => {
                 let binary = binary_in_prefix(&found).unwrap_or_default();
                 if !Path::new(&binary).is_file() {
-                    problems.push(format!("AGENTS.md points at a binary that does not exist ({binary})"));
+                    problems.push(format!(
+                        "AGENTS.md points at a binary that does not exist ({binary})"
+                    ));
                 } else if found != prefix {
                     problems.push("AGENTS.md names another binary or root than this one".into());
                 }
@@ -722,10 +805,15 @@ pub fn priming_problems(project: &Project, prefix: &str) -> Vec<String> {
         },
     }
     #[cfg(unix)]
-    let claude_ok = std::fs::read_link(dir.join("CLAUDE.md")).is_ok_and(|target| target == Path::new("AGENTS.md"));
+    let claude_ok = std::fs::read_link(dir.join("CLAUDE.md"))
+        .is_ok_and(|target| target == Path::new("AGENTS.md"));
     #[cfg(windows)]
-    let claude_ok = std::fs::symlink_metadata(dir.join("CLAUDE.md")).is_ok_and(|meta| meta.is_file())
-        && std::fs::read(dir.join("AGENTS.md")).ok().zip(std::fs::read(dir.join("CLAUDE.md")).ok()).is_some_and(|(agents, claude)| agents == claude);
+    let claude_ok = std::fs::symlink_metadata(dir.join("CLAUDE.md"))
+        .is_ok_and(|meta| meta.is_file())
+        && std::fs::read(dir.join("AGENTS.md"))
+            .ok()
+            .zip(std::fs::read(dir.join("CLAUDE.md")).ok())
+            .is_some_and(|(agents, claude)| agents == claude);
     if !claude_ok {
         #[cfg(unix)]
         problems.push("CLAUDE.md is not a link to AGENTS.md".into());
@@ -742,7 +830,11 @@ pub fn priming_problems(project: &Project, prefix: &str) -> Vec<String> {
 }
 
 fn binary_in_prefix(prefix: &str) -> Option<String> {
-    let mut chars = prefix.strip_prefix("& ").unwrap_or(prefix).chars().peekable();
+    let mut chars = prefix
+        .strip_prefix("& ")
+        .unwrap_or(prefix)
+        .chars()
+        .peekable();
     let mut binary = String::new();
     let mut quoted = false;
     while let Some(c) = chars.next() {
@@ -806,7 +898,10 @@ pub fn create(root: &Path, name: &str, goal: &str, repos: Vec<Repo>) -> Result<P
     )?;
     write_atomic(&dir.join("TASKS.md"), TASKS_TEMPLATE.as_bytes())?;
     write_atomic(&dir.join(PR_FOLLOWUP), PR_FOLLOWUP_TEMPLATE.as_bytes())?;
-    write_json(&project.state_dir().join("project.json"), &ProjectState::default())?;
+    write_json(
+        &project.state_dir().join("project.json"),
+        &ProjectState::default(),
+    )?;
     // PROJECT.md last: a folder without it is not a project, so a half-made
     // skeleton is never picked up by `list` or the ticker.
     write_atomic(
@@ -838,7 +933,18 @@ mod tests {
         for good in ["a", "demo", "demo-2", "0x", &"a".repeat(40)] {
             assert!(validate_slug(good).is_ok(), "{good}");
         }
-        for bad in ["", "-a", "A", "a_b", "a/b", "../x", "a b", ".", "..", &"a".repeat(41)] {
+        for bad in [
+            "",
+            "-a",
+            "A",
+            "a_b",
+            "a/b",
+            "../x",
+            "a b",
+            ".",
+            "..",
+            &"a".repeat(41),
+        ] {
             assert!(validate_slug(bad).is_err(), "{bad}");
         }
     }
@@ -848,7 +954,10 @@ mod tests {
         assert_eq!(humanize("herdr-projects"), "Herdr Projects");
         assert_eq!(humanize("gtm_ai"), "Gtm Ai");
         assert_eq!(humanize("-v2--api-"), "V2 Api");
-        assert_eq!(display_name("herdr-projects", "herdr-projects"), "Herdr Projects");
+        assert_eq!(
+            display_name("herdr-projects", "herdr-projects"),
+            "Herdr Projects"
+        );
         assert_eq!(display_name("", "herdr-projects"), "Herdr Projects");
         assert_eq!(display_name("  ", "demo"), "Demo");
         for typed in ["GTM AI", "my project", "Demo", "herdr-Projects"] {
@@ -869,7 +978,10 @@ mod tests {
 
     #[test]
     fn slug_derivation_and_name_refusals() {
-        assert_eq!(slug_from_name("My Demo  Project!").unwrap(), "my-demo-project");
+        assert_eq!(
+            slug_from_name("My Demo  Project!").unwrap(),
+            "my-demo-project"
+        );
         assert_eq!(slug_from_name("  Ünï 42 ").unwrap(), "n-42");
         assert_eq!(slug_from_name(&"x".repeat(60)).unwrap().len(), 40);
         for bad in ["../x", "a/b", "a\\b", "..", "!!!", ""] {
@@ -885,11 +997,23 @@ mod tests {
             &root,
             "Demo",
             "Ship \"it\"",
-            vec![parse_repo_arg("/srv/app@box"), parse_repo_arg("/no/such/repo")],
+            vec![
+                parse_repo_arg("/srv/app@box"),
+                parse_repo_arg("/no/such/repo"),
+            ],
         )
         .unwrap();
         assert_eq!(project.slug, "demo");
-        for sub in ["memory", "scratch", "routines", "threads", "inbox/done", "library", "uploads", ".state"] {
+        for sub in [
+            "memory",
+            "scratch",
+            "routines",
+            "threads",
+            "inbox/done",
+            "library",
+            "uploads",
+            ".state",
+        ] {
             assert!(project.dir().join(sub).is_dir(), "{sub}");
         }
         assert!(project.dir().join("MEMORY.md").is_file());
@@ -902,12 +1026,24 @@ mod tests {
         assert_eq!(settings.auto_resolve_days, 7);
         assert!(settings.nudge);
         assert!(project.dir().join(PR_FOLLOWUP).is_file());
-        assert!(crate::routine::load_all(&project).1.is_empty(), "the default routine parses");
+        assert!(
+            crate::routine::load_all(&project).1.is_empty(),
+            "the default routine parses"
+        );
         assert_eq!(
             settings.repos,
             vec![
-                Repo { path: "/srv/app".into(), machine: Some("box".into()) },
-                Repo { path: std::path::absolute(Path::new("/no/such/repo")).unwrap().to_string_lossy().into_owned(), machine: None },
+                Repo {
+                    path: "/srv/app".into(),
+                    machine: Some("box".into())
+                },
+                Repo {
+                    path: std::path::absolute(Path::new("/no/such/repo"))
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                    machine: None
+                },
             ]
         );
         assert!(body.starts_with("# Instructions"));
@@ -919,7 +1055,8 @@ mod tests {
     fn priming_files_are_written_linked_and_checked() {
         let root = tempfile::tempdir().unwrap();
         let project = create(root.path(), "Demo Project", "", vec![]).unwrap();
-        let prefix = crate::coordinator::command_prefix(&std::env::current_exe().unwrap(), root.path());
+        let prefix =
+            crate::coordinator::command_prefix(&std::env::current_exe().unwrap(), root.path());
         write_priming(&project, &prefix).unwrap();
         let text = std::fs::read_to_string(project.dir().join("AGENTS.md")).unwrap();
         assert!(text.contains("you are the coordinator of Demo Project"));
@@ -928,9 +1065,15 @@ mod tests {
         assert!(text.contains("under `threads/`, you are a thread"));
         assert_eq!(prefix_in_agents_md(&text).as_deref(), Some(prefix.as_str()));
         #[cfg(unix)]
-        assert_eq!(std::fs::read_link(project.dir().join("CLAUDE.md")).unwrap(), Path::new("AGENTS.md"));
+        assert_eq!(
+            std::fs::read_link(project.dir().join("CLAUDE.md")).unwrap(),
+            Path::new("AGENTS.md")
+        );
         #[cfg(windows)]
-        assert_eq!(std::fs::read(project.dir().join("CLAUDE.md")).unwrap(), text.as_bytes());
+        assert_eq!(
+            std::fs::read(project.dir().join("CLAUDE.md")).unwrap(),
+            text.as_bytes()
+        );
         assert!(project.dir().join("uploads").is_dir());
         assert!(priming_problems(&project, &prefix).is_empty());
 
@@ -947,13 +1090,23 @@ mod tests {
         // A foreign AGENTS.md is kept beside ours.
         std::fs::write(project.dir().join("AGENTS.md"), "codex notes").unwrap();
         write_priming(&project, &prefix).unwrap();
-        assert_eq!(std::fs::read_to_string(project.dir().join("AGENTS.md.before-herdr-projects")).unwrap(), "codex notes");
+        assert_eq!(
+            std::fs::read_to_string(project.dir().join("AGENTS.md.before-herdr-projects")).unwrap(),
+            "codex notes"
+        );
         // A hand-written CLAUDE.md is kept beside the link, not lost.
         std::fs::remove_file(project.dir().join("CLAUDE.md")).unwrap();
         std::fs::write(project.dir().join("CLAUDE.md"), "mine").unwrap();
-        assert!(priming_problems(&project, &prefix).iter().any(|p| p.contains("CLAUDE.md")));
+        assert!(
+            priming_problems(&project, &prefix)
+                .iter()
+                .any(|p| p.contains("CLAUDE.md"))
+        );
         write_priming(&project, &prefix).unwrap();
-        assert_eq!(std::fs::read_to_string(project.dir().join("CLAUDE.md.before-herdr-projects")).unwrap(), "mine");
+        assert_eq!(
+            std::fs::read_to_string(project.dir().join("CLAUDE.md.before-herdr-projects")).unwrap(),
+            "mine"
+        );
         assert!(priming_problems(&project, &prefix).is_empty());
     }
 
@@ -961,7 +1114,8 @@ mod tests {
     fn repeated_foreign_claude_edits_preserve_current_and_original_backup() {
         let root = tempfile::tempdir().unwrap();
         let project = create(root.path(), "Demo", "", vec![]).unwrap();
-        let prefix = crate::coordinator::command_prefix(&std::env::current_exe().unwrap(), root.path());
+        let prefix =
+            crate::coordinator::command_prefix(&std::env::current_exe().unwrap(), root.path());
         write_priming(&project, &prefix).unwrap();
         let claude = project.dir().join("CLAUDE.md");
         let kept = project.dir().join("CLAUDE.md.before-herdr-projects");
@@ -972,7 +1126,10 @@ mod tests {
         assert_eq!(std::fs::read(&kept).unwrap(), original);
         std::fs::remove_file(&claude).unwrap();
 
-        for newer in [b"# New user instructions\n".as_slice(), b"# Edited again\n\xfe".as_slice()] {
+        for newer in [
+            b"# New user instructions\n".as_slice(),
+            b"# Edited again\n\xfe".as_slice(),
+        ] {
             std::fs::write(&claude, newer).unwrap();
             let error = write_priming(&project, &prefix).unwrap_err().to_string();
             assert!(error.contains(&claude.display().to_string()), "{error}");
@@ -998,17 +1155,29 @@ mod tests {
         for name in ["Renamed project", "Updated again"] {
             let contents = agents_md(name, &project.slug, &prefix);
             write_atomic(&project.dir().join("AGENTS.md"), contents.as_bytes()).unwrap();
-            assert_eq!(std::fs::read(project.dir().join("CLAUDE.md")).unwrap(), contents.as_bytes());
+            assert_eq!(
+                std::fs::read(project.dir().join("CLAUDE.md")).unwrap(),
+                contents.as_bytes()
+            );
             assert!(!project.dir().join("CLAUDE.md").is_symlink());
             assert!(priming_problems(&project, &prefix).is_empty());
         }
         let contents = std::fs::read(project.dir().join("AGENTS.md")).unwrap();
         std::fs::remove_file(project.dir().join("AGENTS.md")).unwrap();
         write_atomic(&project.dir().join("AGENTS.md"), &contents).unwrap();
-        assert_eq!(std::fs::read(project.dir().join("CLAUDE.md")).unwrap(), contents);
+        assert_eq!(
+            std::fs::read(project.dir().join("CLAUDE.md")).unwrap(),
+            contents
+        );
         assert!(priming_problems(&project, &prefix).is_empty());
-        assert_eq!(std::fs::read_to_string(project.dir().join("AGENTS.md.before-herdr-projects")).unwrap(), "user agents");
-        assert_eq!(std::fs::read_to_string(project.dir().join("CLAUDE.md.before-herdr-projects")).unwrap(), "user claude");
+        assert_eq!(
+            std::fs::read_to_string(project.dir().join("AGENTS.md.before-herdr-projects")).unwrap(),
+            "user agents"
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.dir().join("CLAUDE.md.before-herdr-projects")).unwrap(),
+            "user claude"
+        );
     }
 
     #[cfg(windows)]
@@ -1016,7 +1185,8 @@ mod tests {
     fn edited_generated_claude_with_header_preserves_current_and_backup() {
         let root = tempfile::tempdir().unwrap();
         let project = create(root.path(), "Demo", "", vec![]).unwrap();
-        let prefix = crate::coordinator::command_prefix(&std::env::current_exe().unwrap(), root.path());
+        let prefix =
+            crate::coordinator::command_prefix(&std::env::current_exe().unwrap(), root.path());
         let claude = project.dir().join("CLAUDE.md");
         let kept = project.dir().join("CLAUDE.md.before-herdr-projects");
         let original = b"# Original user instructions\n";
@@ -1028,7 +1198,9 @@ mod tests {
 
         for name in ["Renamed project", "Updated again"] {
             let contents = agents_md(name, &project.slug, &prefix);
-            let error = write_atomic(&project.dir().join("AGENTS.md"), contents.as_bytes()).unwrap_err().to_string();
+            let error = write_atomic(&project.dir().join("AGENTS.md"), contents.as_bytes())
+                .unwrap_err()
+                .to_string();
             assert!(error.contains(&claude.display().to_string()), "{error}");
             assert!(error.contains(&kept.display().to_string()), "{error}");
             assert!(error.contains("both files were preserved"), "{error}");
@@ -1103,16 +1275,35 @@ mod tests {
         let safety = load_safety(config.path(), here).unwrap();
         assert!(safety.yolo, "inherited from the default table");
         assert_eq!(safety.start_threads, "auto", "yolo wins over propose");
-        assert!(safety.thread_agent_args.is_empty(), "the project's own empty list wins");
+        assert!(
+            safety.thread_agent_args.is_empty(),
+            "the project's own empty list wins"
+        );
         let other = load_safety(config.path(), Path::new("/projects/other")).unwrap();
-        assert_eq!((other.yolo, other.thread_agent_args), (true, vec!["--a".to_string()]));
+        assert_eq!(
+            (other.yolo, other.thread_agent_args),
+            (true, vec!["--a".to_string()])
+        );
 
         let args = safety.launch_args("claude", &["--model".into(), "opus".into()]);
         assert_eq!(args, ["--model", "opus", "--dangerously-skip-permissions"]);
-        assert_eq!(safety.launch_args("codex", &[]), ["--dangerously-bypass-approvals-and-sandbox"]);
-        assert_eq!(safety.launch_args("claude", &["--dangerously-skip-permissions".into()]), ["--dangerously-skip-permissions"], "not twice");
-        assert!(safety.launch_args("kiro", &[]).is_empty(), "no known flag: nothing added");
-        assert!(Safety::default().launch_args("claude", &[]).is_empty(), "careful mode adds nothing");
+        assert_eq!(
+            safety.launch_args("codex", &[]),
+            ["--dangerously-bypass-approvals-and-sandbox"]
+        );
+        assert_eq!(
+            safety.launch_args("claude", &["--dangerously-skip-permissions".into()]),
+            ["--dangerously-skip-permissions"],
+            "not twice"
+        );
+        assert!(
+            safety.launch_args("kiro", &[]).is_empty(),
+            "no known flag: nothing added"
+        );
+        assert!(
+            Safety::default().launch_args("claude", &[]).is_empty(),
+            "careful mode adds nothing"
+        );
     }
 
     #[test]
@@ -1120,7 +1311,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let project = create(root.path(), "demo", "", vec![]).unwrap();
         std::fs::remove_file(project.project_md()).unwrap();
-        assert!(project.update_coordinator(|c| c.pane_id = "w1:p1".into()).is_err());
+        assert!(
+            project
+                .update_coordinator(|c| c.pane_id = "w1:p1".into())
+                .is_err()
+        );
         assert!(project.coordinator().is_none());
 
         // A deleted folder is not recreated by taking the lock.
@@ -1136,18 +1331,31 @@ mod tests {
         let held = project.lock().unwrap();
         let token = root.path().join(".project-demo.lock");
         let waiter = File::options().write(true).open(&token).unwrap();
-        assert!(matches!(waiter.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+        assert!(matches!(
+            waiter.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
 
         let target = root.path().join(".trash").join("demo");
         std::fs::create_dir(target.parent().unwrap()).unwrap();
         std::fs::rename(project.dir(), &target).unwrap();
-        assert!(token.is_file(), "the authoritative token stays outside the moved folder");
-        assert!(matches!(waiter.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+        assert!(
+            token.is_file(),
+            "the authoritative token stays outside the moved folder"
+        );
+        assert!(matches!(
+            waiter.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
         held._file.unlock().unwrap();
         drop(held);
         waiter.lock().unwrap();
         waiter.unlock().unwrap();
-        assert!(project.update_coordinator(|c| c.pane_id = "stale".into()).is_err());
+        assert!(
+            project
+                .update_coordinator(|c| c.pane_id = "stale".into())
+                .is_err()
+        );
         assert!(!project.dir().exists());
         assert!(target.join("PROJECT.md").is_file());
     }
@@ -1155,9 +1363,14 @@ mod tests {
     #[test]
     fn renaming_preserves_state_and_switches_to_the_destination_token() {
         let root = tempfile::tempdir().unwrap();
-        let project = create(root.path(), "earlier", "", vec![]).unwrap().rename_to("demo").unwrap();
+        let project = create(root.path(), "earlier", "", vec![])
+            .unwrap()
+            .rename_to("demo")
+            .unwrap();
         project.set_status(Status::Paused).unwrap();
-        project.update_coordinator(|c| c.agent_session = "session".into()).unwrap();
+        project
+            .update_coordinator(|c| c.agent_session = "session".into())
+            .unwrap();
         let moved = project.rename_to("renamed").unwrap();
         assert_eq!(moved.status(), Status::Paused);
         assert_eq!(moved.former_slugs(), ["earlier", "demo"]);
@@ -1166,18 +1379,36 @@ mod tests {
         assert!(!project.dir().exists());
 
         let held = moved.lock().unwrap();
-        let destination = File::options().write(true).open(root.path().join(".project-renamed.lock")).unwrap();
-        assert!(matches!(destination.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+        let destination = File::options()
+            .write(true)
+            .open(root.path().join(".project-renamed.lock"))
+            .unwrap();
+        assert!(matches!(
+            destination.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
         held._file.unlock().unwrap();
         drop(held);
         let recreated = create(root.path(), "demo", "", vec![]).unwrap();
         let held = recreated.lock().unwrap();
-        let original = File::options().write(true).open(root.path().join(".project-demo.lock")).unwrap();
-        assert!(matches!(original.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+        let original = File::options()
+            .write(true)
+            .open(root.path().join(".project-demo.lock"))
+            .unwrap();
+        assert!(matches!(
+            original.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
         held._file.unlock().unwrap();
         drop(held);
-        assert!(moved.rename_to("demo").is_err(), "an existing destination is never overwritten");
-        assert!(moved.rename_to("renamed").is_err(), "a same-slug move must not lock itself twice");
+        assert!(
+            moved.rename_to("demo").is_err(),
+            "an existing destination is never overwritten"
+        );
+        assert!(
+            moved.rename_to("renamed").is_err(),
+            "a same-slug move must not lock itself twice"
+        );
         assert_eq!(recreated.read_project_md().unwrap().0.name, "Demo");
     }
 
@@ -1185,14 +1416,20 @@ mod tests {
     fn coordinator_updates_keep_other_fields() {
         let root = tempfile::tempdir().unwrap();
         let project = create(root.path(), "demo", "", vec![]).unwrap();
-        project.update_coordinator(|c| c.socket = "/s".into()).unwrap();
-        project.update_coordinator(|c| c.agent_session = "sess".into()).unwrap();
+        project
+            .update_coordinator(|c| c.socket = "/s".into())
+            .unwrap();
+        project
+            .update_coordinator(|c| c.agent_session = "sess".into())
+            .unwrap();
         let record = project.coordinator().unwrap();
         assert_eq!(record.socket, "/s");
         assert_eq!(record.agent_session, "sess");
-        assert!(std::fs::read_dir(project.state_dir())
-            .unwrap()
-            .flatten()
-            .all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")));
+        assert!(
+            std::fs::read_dir(project.state_dir())
+                .unwrap()
+                .flatten()
+                .all(|e| !e.file_name().to_string_lossy().ends_with(".tmp"))
+        );
     }
 }

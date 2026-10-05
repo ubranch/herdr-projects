@@ -39,27 +39,41 @@ pub fn needs_you(group: Group) -> bool {
 }
 
 fn pr_number(url: &str) -> Option<&str> {
-    url.rsplit('/').next().filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    url.rsplit('/')
+        .next()
+        .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Line 3 of a thread row: the group word and one fact.
 pub fn state_line(group: Group, thread: &Thread, live: &Live, now: jiff::Timestamp) -> String {
-    let percent = live.self_report.as_ref().and_then(|r| r.percent).filter(|p| *p < 100).map(|p| format!("~{p}%"));
+    let percent = live
+        .self_report
+        .as_ref()
+        .and_then(|r| r.percent)
+        .filter(|p| *p < 100)
+        .map(|p| format!("~{p}%"));
     let pr = pr_number(&thread.pr).map(|n| format!("PR #{n}"));
     let fact = match group {
         Group::WaitingOnYou if !live.pane_exists => Some("pane closed".to_string()),
-        Group::WaitingOnYou if thread.status == crate::thread::Status::Failed => Some("failed".to_string()),
-        Group::WaitingOnYou if live.agent_state.as_deref() == Some("blocked") => Some("blocked".to_string()),
+        Group::WaitingOnYou if thread.status == crate::thread::Status::Failed => {
+            Some("failed".to_string())
+        }
+        Group::WaitingOnYou if live.agent_state.as_deref() == Some("blocked") => {
+            Some("blocked".to_string())
+        }
         Group::WaitingOnYou => percent,
         Group::ReadyForReview | Group::Landing => pr.or_else(|| Some("report".into())),
         Group::Working => match (&live.self_report, percent) {
             (_, Some(p)) if live.report_age_secs < QUIET_SECS => Some(p),
             _ => {
                 let since = match &live.self_report {
-                    Some(record) => live.report_age_secs.max(now.as_second() - record.reported_at),
+                    Some(record) => live
+                        .report_age_secs
+                        .max(now.as_second() - record.reported_at),
                     None => crate::thread::seconds_since(&thread.last_state_change, now),
                 };
-                (since >= QUIET_SECS && !thread.prompt_pending).then(|| format!("{}m quiet", since / 60))
+                (since >= QUIET_SECS && !thread.prompt_pending)
+                    .then(|| format!("{}m quiet", since / 60))
             }
         },
         Group::Idle | Group::Resolved => None,
@@ -78,7 +92,10 @@ pub fn thread_display(thread: &Thread) -> String {
 /// A coordinator's row name: the project's name, marked as its group's head
 /// in the agents list (see `grouping::HEAD_MARK`).
 pub fn coordinator_display(project: &Project) -> String {
-    let name = project.read_project_md().map(|(s, _)| project::display_name(&s.name, &project.slug)).unwrap_or_else(|_| project.slug.clone());
+    let name = project
+        .read_project_md()
+        .map(|(s, _)| project::display_name(&s.name, &project.slug))
+        .unwrap_or_else(|_| project.slug.clone());
     format!("{name}{}", crate::grouping::HEAD_MARK)
 }
 
@@ -89,7 +106,17 @@ pub fn report_pane(herdr: &Herdr, pane: &str, display: &str, slug: &str, group: 
     let ttl = TOKEN_TTL_MS.to_string();
     let rank = group.rank().to_string();
     let tokens = [format!("hp_project={slug}"), format!("hp_rank={rank}")];
-    let mut args = vec!["pane", "report-metadata", pane, "--source", crate::herdr::SOURCE, "--display-agent", display, "--ttl-ms", &ttl];
+    let mut args = vec![
+        "pane",
+        "report-metadata",
+        pane,
+        "--source",
+        crate::herdr::SOURCE,
+        "--display-agent",
+        display,
+        "--ttl-ms",
+        &ttl,
+    ];
     for token in &tokens {
         args.push("--token");
         args.push(token);
@@ -106,7 +133,14 @@ pub fn clear_pane(herdr: &Herdr, pane: &str) {
     if pane.is_empty() {
         return;
     }
-    let mut args = vec!["pane", "report-metadata", pane, "--source", crate::herdr::SOURCE, "--clear-display-agent"];
+    let mut args = vec![
+        "pane",
+        "report-metadata",
+        pane,
+        "--source",
+        crate::herdr::SOURCE,
+        "--clear-display-agent",
+    ];
     for name in ["hp_project", "hp_rank"].into_iter().chain(OLD_TOKENS) {
         args.push("--clear-token");
         args.push(name);
@@ -132,7 +166,11 @@ pub fn project_line(groups: &[Group], paused: bool) -> String {
             parts.push(format!("{n} {label}"));
         }
     }
-    if parts.is_empty() { "idle".into() } else { parts.join(" · ") }
+    if parts.is_empty() {
+        "idle".into()
+    } else {
+        parts.join(" · ")
+    }
 }
 
 /// Clears the grouping tokens of a Space.
@@ -148,7 +186,12 @@ pub fn sub_line(state_line: &str, activity: &str) -> String {
         "idle" | "working" | "resolved" => "",
         line => line.strip_prefix("working · ").unwrap_or(line),
     };
-    [fact, activity.trim()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" · ")
+    [fact, activity.trim()]
+        .iter()
+        .filter(|s| !s.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// The groups of a project's open threads, as the ticker last persisted them.
@@ -171,7 +214,12 @@ pub fn needs_you_line(root: &Path) -> Option<String> {
         .iter()
         .filter_map(|slug| Project::load(root, slug).ok())
         .filter(|p| p.status() == project::Status::Active)
-        .map(|p| recorded_groups(&p).into_iter().filter(|g| needs_you(*g)).count())
+        .map(|p| {
+            recorded_groups(&p)
+                .into_iter()
+                .filter(|g| needs_you(*g))
+                .count()
+        })
         .sum();
     (n > 0).then(|| format!("projects: {n} need you"))
 }
@@ -246,11 +294,17 @@ fn row_of(tokens: &[&str]) -> Value {
 /// Herdr's built-in rows (0.9.1), which `configure` wrote into a config that
 /// had none.
 fn herdr_agent_rows() -> [Value; 2] {
-    [row_of(&["state_icon", "machine", "workspace", "tab"]), row_of(&["agent"])]
+    [
+        row_of(&["state_icon", "machine", "workspace", "tab"]),
+        row_of(&["agent"]),
+    ]
 }
 
 fn herdr_space_rows() -> [Value; 2] {
-    [row_of(&["state_icon", "workspace"]), row_of(&["branch", "git_status"])]
+    [
+        row_of(&["state_icon", "workspace"]),
+        row_of(&["branch", "git_status"]),
+    ]
 }
 
 /// The agent card that replaces Herdr's built-in rows: one line, status
@@ -259,7 +313,11 @@ fn herdr_space_rows() -> [Value; 2] {
 fn agent_card() -> Value {
     let mut row = Array::new();
     row.push("state_icon");
-    row.push(head_token("agent", crate::grouping::HEAD_MARK, &[("bold", false), ("dim", false)]));
+    row.push(head_token(
+        "agent",
+        crate::grouping::HEAD_MARK,
+        &[("bold", false), ("dim", false)],
+    ));
     row.push("state_text");
     row.into()
 }
@@ -311,7 +369,6 @@ fn cards_0_2_19() -> (Value, Value) {
     (agent.into(), space.into())
 }
 
-
 /// The tokens a row names, in order.
 fn row_tokens(row: &Value) -> Vec<String> {
     row.as_array()
@@ -319,7 +376,9 @@ fn row_tokens(row: &Value) -> Vec<String> {
             a.iter()
                 .filter_map(|v| match v {
                     Value::String(s) => Some(s.value().clone()),
-                    Value::InlineTable(t) => t.get("token").and_then(Value::as_str).map(str::to_string),
+                    Value::InlineTable(t) => {
+                        t.get("token").and_then(Value::as_str).map(str::to_string)
+                    }
                     _ => None,
                 })
                 .collect()
@@ -330,13 +389,18 @@ fn row_tokens(row: &Value) -> Vec<String> {
 /// A row this plugin owns: every token is one of ours, today's or an
 /// earlier layout's (the 0.2.17/0.2.18 headings, the 0.2.19 rails).
 fn ours(row: &Value) -> bool {
-    let known: Vec<String> = crate::grouping::tokens().into_iter().chain(crate::grouping::legacy()).map(|t| format!("${t}")).collect();
+    let known: Vec<String> = crate::grouping::tokens()
+        .into_iter()
+        .chain(crate::grouping::legacy())
+        .map(|t| format!("${t}"))
+        .collect();
     let tokens = row_tokens(row);
     !tokens.is_empty() && tokens.iter().all(|t| known.contains(t))
 }
 
 fn same(a: &Value, b: &Value) -> bool {
-    a.to_string().split_whitespace().collect::<String>() == b.to_string().split_whitespace().collect::<String>()
+    a.to_string().split_whitespace().collect::<String>()
+        == b.to_string().split_whitespace().collect::<String>()
 }
 
 /// Rebuilds one `rows` array: drops every row of ours (today's and earlier
@@ -344,8 +408,16 @@ fn same(a: &Value, b: &Value) -> bool {
 /// Herdr's built-in rows for `card` when they are exactly Herdr's (never rows
 /// the user wrote), then puts `last` at the bottom. With `remove`, only drops
 /// ours and puts Herdr's built-in rows back in place of `card`.
-fn edit_rows(item: &mut Item, last: &[Value], builtin: &[Value], card: Option<(&Value, &Value)>, remove: bool) -> Result<()> {
-    let rows = item.as_array_mut().context("sidebar rows must be an array")?;
+fn edit_rows(
+    item: &mut Item,
+    last: &[Value],
+    builtin: &[Value],
+    card: Option<(&Value, &Value)>,
+    remove: bool,
+) -> Result<()> {
+    let rows = item
+        .as_array_mut()
+        .context("sidebar rows must be an array")?;
     rows.retain(|v| !ours(v));
     let card = card.map(|(card, old)| {
         for row in rows.iter_mut() {
@@ -363,7 +435,8 @@ fn edit_rows(item: &mut Item, last: &[Value], builtin: &[Value], card: Option<(&
                 rows.push(row.clone());
             }
         };
-        let is_builtin = current.len() == builtin.len() && current.iter().zip(builtin).all(|(a, b)| same(a, b));
+        let is_builtin =
+            current.len() == builtin.len() && current.iter().zip(builtin).all(|(a, b)| same(a, b));
         let is_card = current.len() == 1 && same(&current[0], card);
         if !remove && is_builtin {
             replace(rows, std::slice::from_ref(card));
@@ -375,7 +448,11 @@ fn edit_rows(item: &mut Item, last: &[Value], builtin: &[Value], card: Option<(&
     if remove {
         return Ok(());
     }
-    ensure!(rows.len() + last.len() <= 16, "the sidebar already has {} rows; remove one before configuring", rows.len());
+    ensure!(
+        rows.len() + last.len() <= 16,
+        "the sidebar already has {} rows; remove one before configuring",
+        rows.len()
+    );
     for row in last {
         rows.push(row.clone());
     }
@@ -383,7 +460,9 @@ fn edit_rows(item: &mut Item, last: &[Value], builtin: &[Value], card: Option<(&
 }
 
 fn table_mut<'a>(parent: &'a mut Item, key: &str) -> Result<&'a mut Item> {
-    let table = parent.as_table_like_mut().with_context(|| format!("`{key}`'s parent must be a table"))?;
+    let table = parent
+        .as_table_like_mut()
+        .with_context(|| format!("`{key}`'s parent must be a table"))?;
     if table.get(key).is_none() {
         let mut t = Table::new();
         t.set_implicit(true);
@@ -395,7 +474,9 @@ fn table_mut<'a>(parent: &'a mut Item, key: &str) -> Result<&'a mut Item> {
 /// Adds (or removes) the rows, the popup key and the tab-bar entry. Existing
 /// rows, keys and entries of the user are never touched. Idempotent.
 pub fn config_edit(input: &str, spec: &Spec, remove: bool) -> Result<String> {
-    let mut doc = input.parse::<DocumentMut>().context("config.toml does not parse")?;
+    let mut doc = input
+        .parse::<DocumentMut>()
+        .context("config.toml does not parse")?;
     let agent_last = [sub_row()];
     let (agent_card, space_card) = (agent_card(), space_card());
     let (old_agent_card, old_space_card) = cards_0_2_19();
@@ -409,10 +490,20 @@ pub fn config_edit(input: &str, spec: &Spec, remove: bool) -> Result<String> {
             agents["rows"] = toml_edit::value(Array::from_iter(herdr_agent_rows()));
         }
         if let Some(rows) = agents.get_mut("rows").filter(|v| !v.is_none()) {
-            edit_rows(rows, &agent_last, &herdr_agent_rows(), Some((&agent_card, &old_agent_card)), remove)?;
+            edit_rows(
+                rows,
+                &agent_last,
+                &herdr_agent_rows(),
+                Some((&agent_card, &old_agent_card)),
+                remove,
+            )?;
         }
         if let Some(overrides) = agents.get_mut("rows_by_agent").filter(|v| !v.is_none()) {
-            for (_, rows) in overrides.as_table_like_mut().context("rows_by_agent must be a table")?.iter_mut() {
+            for (_, rows) in overrides
+                .as_table_like_mut()
+                .context("rows_by_agent must be a table")?
+                .iter_mut()
+            {
                 edit_rows(rows, &agent_last, &herdr_agent_rows(), None, remove)?;
             }
         }
@@ -421,16 +512,34 @@ pub fn config_edit(input: &str, spec: &Spec, remove: bool) -> Result<String> {
             spaces["rows"] = toml_edit::value(Array::from_iter(herdr_space_rows()));
         }
         if let Some(rows) = spaces.get_mut("rows").filter(|v| !v.is_none()) {
-            edit_rows(rows, &[], &herdr_space_rows(), Some((&space_card, &old_space_card)), remove)?;
+            edit_rows(
+                rows,
+                &[],
+                &herdr_space_rows(),
+                Some((&space_card, &old_space_card)),
+                remove,
+            )?;
         }
 
         // Tab bar: one command entry.
-        let is_ours = |v: &Value| v.as_inline_table().and_then(|t| t.get("command")).and_then(Value::as_str).is_some_and(crate::setup::is_tab_command);
+        let is_ours = |v: &Value| {
+            v.as_inline_table()
+                .and_then(|t| t.get("command"))
+                .and_then(Value::as_str)
+                .is_some_and(crate::setup::is_tab_command)
+        };
         if ui.get("tab_bar_right").is_none() && !remove {
             ui["tab_bar_right"] = toml_edit::value(Array::new());
         }
         if let Some(entries) = ui.get_mut("tab_bar_right").and_then(Item::as_array_mut) {
-            entries.retain(|v| !is_ours(v) || (!remove && v.as_inline_table().and_then(|t| t.get("command")).and_then(Value::as_str) == Some(spec.tab_command.as_str())));
+            entries.retain(|v| {
+                !is_ours(v)
+                    || (!remove
+                        && v.as_inline_table()
+                            .and_then(|t| t.get("command"))
+                            .and_then(Value::as_str)
+                            == Some(spec.tab_command.as_str()))
+            });
             if !remove && !entries.iter().any(is_ours) {
                 let mut entry = InlineTable::new();
                 entry.insert("type", "command".into());
@@ -449,7 +558,10 @@ pub fn config_edit(input: &str, spec: &Spec, remove: bool) -> Result<String> {
         if table.get("command").is_none() && !remove {
             table.insert("command", Item::ArrayOfTables(ArrayOfTables::new()));
         }
-        if let Some(commands) = table.get_mut("command").and_then(Item::as_array_of_tables_mut) {
+        if let Some(commands) = table
+            .get_mut("command")
+            .and_then(Item::as_array_of_tables_mut)
+        {
             let ours = |t: &Table| t.get("command").and_then(Item::as_str) == Some(POPUP_ACTION);
             if remove {
                 commands.retain(|t| !ours(t));
@@ -494,7 +606,13 @@ pub fn builtin_keys(default_config: &str) -> Vec<(String, String)> {
             continue;
         };
         let action = action.trim();
-        if action.is_empty() || action.contains(' ') || matches!(action, "key" | "type" | "command" | "description" | "width" | "height") {
+        if action.is_empty()
+            || action.contains(' ')
+            || matches!(
+                action,
+                "key" | "type" | "command" | "description" | "width" | "height"
+            )
+        {
             continue;
         }
         let value = value.trim();
@@ -522,7 +640,10 @@ pub fn key_conflict(config: &str, key: &str, builtin: &[(String, String)]) -> Op
             }
             let bound: Vec<String> = match value {
                 Item::Value(Value::String(s)) => vec![s.value().clone()],
-                Item::Value(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+                Item::Value(Value::Array(a)) => a
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect(),
                 _ => Vec::new(),
             };
             if bound.iter().any(|b| b == key) {
@@ -532,8 +653,15 @@ pub fn key_conflict(config: &str, key: &str, builtin: &[(String, String)]) -> Op
         }
         if let Some(commands) = keys.get("command").and_then(Item::as_array_of_tables) {
             for c in commands.iter() {
-                if c.get("key").and_then(Item::as_str) == Some(key) && c.get("command").and_then(Item::as_str) != Some(POPUP_ACTION) {
-                    return Some(format!("`{key}` already runs `{}`", c.get("command").and_then(Item::as_str).unwrap_or("a custom command")));
+                if c.get("key").and_then(Item::as_str) == Some(key)
+                    && c.get("command").and_then(Item::as_str) != Some(POPUP_ACTION)
+                {
+                    return Some(format!(
+                        "`{key}` already runs `{}`",
+                        c.get("command")
+                            .and_then(Item::as_str)
+                            .unwrap_or("a custom command")
+                    ));
                 }
             }
         }
@@ -545,15 +673,27 @@ pub fn key_conflict(config: &str, key: &str, builtin: &[(String, String)]) -> Op
 }
 
 /// Checks a candidate config with `herdr config check` before it goes live.
-pub fn check_config(herdr_bin: &str, runner: &dyn crate::runner::Runner, text: &str, scratch: &Path) -> Result<()> {
+pub fn check_config(
+    herdr_bin: &str,
+    runner: &dyn crate::runner::Runner,
+    text: &str,
+    scratch: &Path,
+) -> Result<()> {
     std::fs::create_dir_all(scratch)?;
     let candidate = scratch.join(format!("config-check-{}.toml", std::process::id()));
     std::fs::write(&candidate, text)?;
-    let out = runner.run(&crate::runner::Cmd::new(herdr_bin, CALL_TIMEOUT).env("HERDR_CONFIG_PATH", candidate.to_string_lossy()).args(["config", "check"]));
+    let out = runner.run(
+        &crate::runner::Cmd::new(herdr_bin, CALL_TIMEOUT)
+            .env("HERDR_CONFIG_PATH", candidate.to_string_lossy())
+            .args(["config", "check"]),
+    );
     let _ = std::fs::remove_file(&candidate);
     let out = out?;
     if !out.success() {
-        bail!("Herdr rejected the proposed config ({}); nothing was changed", out.error_text());
+        bail!(
+            "Herdr rejected the proposed config ({}); nothing was changed",
+            out.error_text()
+        );
     }
     Ok(())
 }
@@ -564,20 +704,34 @@ mod tests {
     use crate::thread::Status;
 
     fn spec() -> Spec {
-        Spec { key: "prefix+a".into(), tab_command: "/bin/hp --root /r needs-you --line".into() }
+        Spec {
+            key: "prefix+a".into(),
+            tab_command: "/bin/hp --root /r needs-you --line".into(),
+        }
     }
 
     fn rows(text: &str, section: &str) -> Vec<String> {
         let doc = text.parse::<DocumentMut>().unwrap();
-        doc["ui"]["sidebar"][section]["rows"].as_array().unwrap().iter().map(|r| r.to_string()).collect()
+        doc["ui"]["sidebar"][section]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.to_string())
+            .collect()
     }
 
     #[test]
     fn config_edit_adds_once_keeps_user_rows_and_removes_exactly_its_own() {
         let original = "# mine\n[ui.sidebar.agents]\nrows = [[\"agent\"], [{ token = \"$github\" }]]\n[ui.sidebar.agents.rows_by_agent]\nclaude = [[\"agent\"]]\n\n[[keys.command]]\nkey = \"prefix+e\"\ntype = \"plugin_action\"\ncommand = \"other.toggle\"\n";
         let added = config_edit(original, &spec(), false).unwrap();
-        assert!(added.contains("# mine") && added.contains("$github") && added.contains("other.toggle"));
-        assert_eq!(added.matches("\"$hp_sub\"").count(), 2, "agents and the override: {added}");
+        assert!(
+            added.contains("# mine") && added.contains("$github") && added.contains("other.toggle")
+        );
+        assert_eq!(
+            added.matches("\"$hp_sub\"").count(),
+            2,
+            "agents and the override: {added}"
+        );
         assert_eq!(added.matches(POPUP_ACTION).count(), 1);
         assert_eq!(added.matches("needs-you --line").count(), 1);
         assert_eq!(config_edit(&added, &spec(), false).unwrap(), added);
@@ -593,11 +747,27 @@ mod tests {
         for ours in ["$hp_", POPUP_ACTION, "needs-you"] {
             assert!(!removed.contains(ours), "{ours} left in\n{removed}");
         }
-        assert!(removed.contains("$github") && removed.contains("other.toggle") && removed.contains("# mine"));
-        assert_eq!(rows(&removed, "spaces").len(), 2, "Herdr's own Space rows come back: {removed}");
+        assert!(
+            removed.contains("$github")
+                && removed.contains("other.toggle")
+                && removed.contains("# mine")
+        );
+        assert_eq!(
+            rows(&removed, "spaces").len(),
+            2,
+            "Herdr's own Space rows come back: {removed}"
+        );
 
         // Another key, and a moved binary, replace ours rather than adding.
-        let moved = config_edit(&added, &Spec { key: "prefix+y".into(), tab_command: "/new/hp --root /r needs-you --line".into() }, false).unwrap();
+        let moved = config_edit(
+            &added,
+            &Spec {
+                key: "prefix+y".into(),
+                tab_command: "/new/hp --root /r needs-you --line".into(),
+            },
+            false,
+        )
+        .unwrap();
         assert_eq!(moved.matches(POPUP_ACTION).count(), 1);
         assert!(moved.contains("prefix+y") && !moved.contains("/bin/hp --root"));
         assert_eq!(moved.matches("needs-you --line").count(), 1);
@@ -608,18 +778,37 @@ mod tests {
         let added = config_edit("", &spec(), false).unwrap();
         let agents = rows(&added, "agents");
         assert_eq!(agents.len(), 2, "{added}");
-        assert!(agents[0].contains("\"state_icon\"") && agents[0].contains("\"agent\"") && agents[0].contains("\"state_text\"") && !agents[0].contains("machine"));
-        assert!(agents[0].contains(crate::grouping::HEAD_MARK) && agents[0].contains("bold = true") && agents[0].contains("bold = false"));
+        assert!(
+            agents[0].contains("\"state_icon\"")
+                && agents[0].contains("\"agent\"")
+                && agents[0].contains("\"state_text\"")
+                && !agents[0].contains("machine")
+        );
+        assert!(
+            agents[0].contains(crate::grouping::HEAD_MARK)
+                && agents[0].contains("bold = true")
+                && agents[0].contains("bold = false")
+        );
         assert!(agents[1].contains("$hp_sub"));
         let spaces = rows(&added, "spaces");
         assert_eq!(spaces.len(), 1, "a Space is one plain row: {added}");
-        assert!(spaces[0].contains(crate::grouping::HOME_MARK) && spaces[0].contains("bold = true") && !spaces[0].contains("hide"));
-        assert!(!spaces[0].contains("$hp"), "no token of ours on a Space row");
+        assert!(
+            spaces[0].contains(crate::grouping::HOME_MARK)
+                && spaces[0].contains("bold = true")
+                && !spaces[0].contains("hide")
+        );
+        assert!(
+            !spaces[0].contains("$hp"),
+            "no token of ours on a Space row"
+        );
         // Rows the user wrote are never swapped.
         let mine = "[ui.sidebar.spaces]\nrows = [[\"workspace\"], [\"branch\"]]\n";
         let kept = rows(&config_edit(mine, &spec(), false).unwrap(), "spaces");
         assert_eq!(kept[0].replace(' ', ""), "[\"workspace\"]");
-        let full = format!("[ui.sidebar.agents]\nrows = [{}]\n", vec!["[\"agent\"]"; 16].join(","));
+        let full = format!(
+            "[ui.sidebar.agents]\nrows = [{}]\n",
+            vec!["[\"agent\"]"; 16].join(",")
+        );
         assert!(config_edit(&full, &spec(), false).is_err());
     }
 
@@ -639,16 +828,41 @@ rows = [[{ token = "$hp_top_n", fg = "#f38ba8", bold = true }, { token = "$hp_to
 "##;
         let migrated = config_edit(old, &spec(), false).unwrap();
         for legacy in crate::grouping::legacy() {
-            assert!(!migrated.contains(&format!("\"${legacy}\"")), "{legacy} left in\n{migrated}");
+            assert!(
+                !migrated.contains(&format!("\"${legacy}\"")),
+                "{legacy} left in\n{migrated}"
+            );
         }
         let agents = rows(&migrated, "agents");
         assert_eq!(agents.len(), 3, "{migrated}");
-        assert!(same(&migrated.parse::<DocumentMut>().unwrap()["ui"]["sidebar"]["agents"]["rows"].as_array().unwrap().get(0).unwrap().clone(), &agent_card()), "the old card became today's in place");
+        assert!(
+            same(
+                &migrated.parse::<DocumentMut>().unwrap()["ui"]["sidebar"]["agents"]["rows"]
+                    .as_array()
+                    .unwrap()
+                    .get(0)
+                    .unwrap()
+                    .clone(),
+                &agent_card()
+            ),
+            "the old card became today's in place"
+        );
         assert!(agents[1].contains("$github") && agents[2].contains("$hp_sub"));
         let spaces = rows(&migrated, "spaces");
         assert_eq!(spaces.len(), 1, "{migrated}");
-        assert!(same(&migrated.parse::<DocumentMut>().unwrap()["ui"]["sidebar"]["spaces"]["rows"].as_array().unwrap().get(0).unwrap().clone(), &space_card()));
-        assert!(migrated.contains("row_gap = 0"), "the user's own settings stay");
+        assert!(same(
+            &migrated.parse::<DocumentMut>().unwrap()["ui"]["sidebar"]["spaces"]["rows"]
+                .as_array()
+                .unwrap()
+                .get(0)
+                .unwrap()
+                .clone(),
+            &space_card()
+        ));
+        assert!(
+            migrated.contains("row_gap = 0"),
+            "the user's own settings stay"
+        );
         assert_eq!(config_edit(&migrated, &spec(), false).unwrap(), migrated);
         // The M1's 0.2.19 agents list: Herdr's defaults became the card, then rails.
         let m1 = old.replace("[{ token = \"$github\", dim = false }], ", "");
@@ -656,7 +870,10 @@ rows = [[{ token = "$hp_top_n", fg = "#f38ba8", bold = true }, { token = "$hp_to
         assert_eq!(agents.len(), 2);
         // Unconfiguring after the migration gives Herdr's own rows back.
         let removed = config_edit(&migrated, &spec(), true).unwrap();
-        assert!(!removed.contains("$hp_") && !removed.contains(crate::grouping::HOME_MARK), "{removed}");
+        assert!(
+            !removed.contains("$hp_") && !removed.contains(crate::grouping::HOME_MARK),
+            "{removed}"
+        );
         assert_eq!(rows(&removed, "spaces").len(), 2);
     }
 
@@ -667,22 +884,39 @@ rows = [[{ token = "$hp_top_n", fg = "#f38ba8", bold = true }, { token = "$hp_to
 sidebar = { agents = { rows = [[{ token = "$hp_top", fg = "#cba6f7", bold = true }, { token = "$hp_other", bold = true, dim = true }, { token = "$hp_note", dim = true }],["state_icon", "machine", "workspace", "tab"], ["agent"], [{ token = "$hp_state", rules = [{ starts_with = "needs you", fg = "#f38ba8", bold = true }, { starts_with = "review", fg = "#f9e2af" }] }], [{ token = "$hp_activity", dim = true }], [{ token = "$hp_tail" }]] } , spaces = { rows = [[{ token = "$hp_top", fg = "#cba6f7", bold = true }, { token = "$hp_other", bold = true, dim = true }],["state_icon", "workspace"], ["branch", "git_status"], [{ token = "$hp" }], [{ token = "$hp_tail" }]] } }
 "##;
         let migrated = config_edit(old, &spec(), false).unwrap();
-        for legacy in ["\"$hp_top\"", "\"$hp_other\"", "\"$hp_note\"", "\"$hp_state\"", "\"$hp_activity\"", "\"$hp_tail\"", "\"$hp\""] {
+        for legacy in [
+            "\"$hp_top\"",
+            "\"$hp_other\"",
+            "\"$hp_note\"",
+            "\"$hp_state\"",
+            "\"$hp_activity\"",
+            "\"$hp_tail\"",
+            "\"$hp\"",
+        ] {
             assert!(!migrated.contains(legacy), "{legacy} left in\n{migrated}");
         }
         assert_eq!(rows(&migrated, "agents").len(), 2, "{migrated}");
-        assert!(!rows(&migrated, "agents")[0].contains("machine"), "Herdr's rows became the card");
+        assert!(
+            !rows(&migrated, "agents")[0].contains("machine"),
+            "Herdr's rows became the card"
+        );
         assert_eq!(rows(&migrated, "spaces").len(), 1);
         assert_eq!(config_edit(&migrated, &spec(), false).unwrap(), migrated);
     }
 
     #[test]
     fn sub_lines_keep_what_herdrs_state_word_does_not_say() {
-        assert_eq!(sub_line("working · ~40%", "Writing tests"), "~40% · Writing tests");
+        assert_eq!(
+            sub_line("working · ~40%", "Writing tests"),
+            "~40% · Writing tests"
+        );
         assert_eq!(sub_line("working", ""), "");
         assert_eq!(sub_line("idle", "Done"), "Done");
         assert_eq!(sub_line("review · report", ""), "review · report");
-        assert_eq!(sub_line("needs you · blocked", " Waiting for you "), "needs you · blocked · Waiting for you");
+        assert_eq!(
+            sub_line("needs you · blocked", " Waiting for you "),
+            "needs you · blocked · Waiting for you"
+        );
         assert_eq!(sub_line("", "Reading code"), "Reading code");
     }
 
@@ -690,48 +924,151 @@ sidebar = { agents = { rows = [[{ token = "$hp_top", fg = "#cba6f7", bold = true
     fn keys_are_checked_against_the_users_and_herdrs_bindings() {
         let defaults = "[ui]\n# x = 1\n[keys]\n# prefix = \"ctrl+b\"\n# previous_tab = \"prefix+p\"\n# rename_pane = \"prefix+shift+p\"\n# open_worktree = \"\"    # optional\n# [[keys.command]]\n# key = \"prefix+alt+g\"\n# command = \"lazygit\"\n[other]\n# nope = \"prefix+a\"\n";
         let builtin = builtin_keys(defaults);
-        assert_eq!(builtin, [("prefix".to_string(), "ctrl+b".to_string()), ("previous_tab".into(), "prefix+p".into()), ("rename_pane".into(), "prefix+shift+p".into())]);
+        assert_eq!(
+            builtin,
+            [
+                ("prefix".to_string(), "ctrl+b".to_string()),
+                ("previous_tab".into(), "prefix+p".into()),
+                ("rename_pane".into(), "prefix+shift+p".into())
+            ]
+        );
         assert!(key_conflict("", "prefix+a", &builtin).is_none());
-        assert!(key_conflict("", "prefix+p", &builtin).unwrap().contains("previous_tab"));
+        assert!(
+            key_conflict("", "prefix+p", &builtin)
+                .unwrap()
+                .contains("previous_tab")
+        );
         // Rebinding previous_tab frees prefix+p.
-        assert!(key_conflict("[keys]\nprevious_tab = \"prefix+[\"\n", "prefix+p", &builtin).is_none());
-        assert!(key_conflict("[keys]\ndetach = \"prefix+a\"\n", "prefix+a", &builtin).unwrap().contains("detach"));
-        let taken = "[[keys.command]]\nkey = \"prefix+a\"\ntype = \"pane\"\ncommand = \"lazygit\"\n";
-        assert!(key_conflict(taken, "prefix+a", &builtin).unwrap().contains("lazygit"));
+        assert!(
+            key_conflict(
+                "[keys]\nprevious_tab = \"prefix+[\"\n",
+                "prefix+p",
+                &builtin
+            )
+            .is_none()
+        );
+        assert!(
+            key_conflict("[keys]\ndetach = \"prefix+a\"\n", "prefix+a", &builtin)
+                .unwrap()
+                .contains("detach")
+        );
+        let taken =
+            "[[keys.command]]\nkey = \"prefix+a\"\ntype = \"pane\"\ncommand = \"lazygit\"\n";
+        assert!(
+            key_conflict(taken, "prefix+a", &builtin)
+                .unwrap()
+                .contains("lazygit")
+        );
         let ours = "[[keys.command]]\nkey = \"prefix+a\"\ntype = \"plugin_action\"\ncommand = \"herdr-projects.open-popup\"\n";
         assert!(key_conflict(ours, "prefix+a", &builtin).is_none());
     }
 
     fn live(state: &str) -> Live {
-        Live { pane_exists: true, agent_state: Some(state.into()), ..Live::default() }
+        Live {
+            pane_exists: true,
+            agent_state: Some(state.into()),
+            ..Live::default()
+        }
     }
 
     #[test]
     fn state_lines_carry_the_word_and_one_fact() {
         let now: jiff::Timestamp = "2026-09-23T12:00:00Z".parse().unwrap();
-        let t = Thread { status: Status::Open, last_state_change: "2026-09-23T11:40:00Z".into(), pr: "https://github.com/o/r/pull/4".into(), ..Thread::default() };
-        let with = |activity: &str, percent: Option<u8>, age: i64, state: &str| {
-            let record = crate::progress::Record { activity: activity.into(), percent, reported_at: now.as_second() - age, ..Default::default() };
-            Live { self_report: Some(record), report_age_secs: age, ..live(state) }
+        let t = Thread {
+            status: Status::Open,
+            last_state_change: "2026-09-23T11:40:00Z".into(),
+            pr: "https://github.com/o/r/pull/4".into(),
+            ..Thread::default()
         };
-        assert_eq!(state_line(Group::WaitingOnYou, &t, &with("Waiting for you", Some(55), 10, "idle"), now), "needs you · ~55%");
-        assert_eq!(state_line(Group::WaitingOnYou, &t, &live("blocked"), now), "needs you · blocked");
-        assert_eq!(state_line(Group::WaitingOnYou, &t, &Live::default(), now), "needs you · pane closed");
-        assert_eq!(state_line(Group::ReadyForReview, &t, &live("idle"), now), "review · PR #4");
-        assert_eq!(state_line(Group::Landing, &t, &live("idle"), now), "landing · PR #4");
-        assert_eq!(state_line(Group::Working, &t, &with("Testing", Some(40), 30, "working"), now), "working · ~40%");
+        let with = |activity: &str, percent: Option<u8>, age: i64, state: &str| {
+            let record = crate::progress::Record {
+                activity: activity.into(),
+                percent,
+                reported_at: now.as_second() - age,
+                ..Default::default()
+            };
+            Live {
+                self_report: Some(record),
+                report_age_secs: age,
+                ..live(state)
+            }
+        };
+        assert_eq!(
+            state_line(
+                Group::WaitingOnYou,
+                &t,
+                &with("Waiting for you", Some(55), 10, "idle"),
+                now
+            ),
+            "needs you · ~55%"
+        );
+        assert_eq!(
+            state_line(Group::WaitingOnYou, &t, &live("blocked"), now),
+            "needs you · blocked"
+        );
+        assert_eq!(
+            state_line(Group::WaitingOnYou, &t, &Live::default(), now),
+            "needs you · pane closed"
+        );
+        assert_eq!(
+            state_line(Group::ReadyForReview, &t, &live("idle"), now),
+            "review · PR #4"
+        );
+        assert_eq!(
+            state_line(Group::Landing, &t, &live("idle"), now),
+            "landing · PR #4"
+        );
+        assert_eq!(
+            state_line(
+                Group::Working,
+                &t,
+                &with("Testing", Some(40), 30, "working"),
+                now
+            ),
+            "working · ~40%"
+        );
         // A harness without self-reports, silent for 20 minutes.
-        assert_eq!(state_line(Group::Working, &t, &live("working"), now), "working · 20m quiet");
-        assert_eq!(state_line(Group::Working, &t, &with("Testing", Some(40), 720, "working"), now), "working · 12m quiet");
+        assert_eq!(
+            state_line(Group::Working, &t, &live("working"), now),
+            "working · 20m quiet"
+        );
+        assert_eq!(
+            state_line(
+                Group::Working,
+                &t,
+                &with("Testing", Some(40), 720, "working"),
+                now
+            ),
+            "working · 12m quiet"
+        );
         assert_eq!(state_line(Group::Idle, &t, &live("idle"), now), "idle");
-        let no_pr = Thread { pr: String::new(), ..t };
-        assert_eq!(state_line(Group::ReadyForReview, &no_pr, &live("idle"), now), "review · report");
+        let no_pr = Thread {
+            pr: String::new(),
+            ..t
+        };
+        assert_eq!(
+            state_line(Group::ReadyForReview, &no_pr, &live("idle"), now),
+            "review · report"
+        );
     }
 
     #[test]
     fn project_lines_count_what_needs_you() {
         use Group::*;
-        assert_eq!(project_line(&[WaitingOnYou, ReadyForReview, Working, Working, Working, Idle], false), "2 need you · 3 working");
+        assert_eq!(
+            project_line(
+                &[
+                    WaitingOnYou,
+                    ReadyForReview,
+                    Working,
+                    Working,
+                    Working,
+                    Idle
+                ],
+                false
+            ),
+            "2 need you · 3 working"
+        );
         assert_eq!(project_line(&[Landing], false), "1 landing");
         assert_eq!(project_line(&[Idle], false), "idle");
         assert_eq!(project_line(&[WaitingOnYou], true), "paused");

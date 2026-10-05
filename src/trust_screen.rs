@@ -38,7 +38,10 @@ pub fn detect(kind: &str, screen: &str) -> Option<&'static str> {
         return None;
     }
     let plain = plain_text(screen);
-    PHRASES.iter().copied().find(|phrase| plain.contains(phrase))
+    PHRASES
+        .iter()
+        .copied()
+        .find(|phrase| plain.contains(phrase))
 }
 
 /// The screen's text with escape sequences dropped and runs of spaces joined,
@@ -75,7 +78,11 @@ fn plain_text(screen: &str) -> String {
 
 /// The trust-screen line in pane `pane` now, read right before typing there.
 /// A screen that cannot be read is an error: the caller does not type.
-pub fn showing(herdr: &crate::herdr::Herdr, pane: &str, kind: &str) -> Result<Option<&'static str>, crate::herdr::HerdrError> {
+pub fn showing(
+    herdr: &crate::herdr::Herdr,
+    pane: &str,
+    kind: &str,
+) -> Result<Option<&'static str>, crate::herdr::HerdrError> {
     Ok(detect(kind, &herdr.agent_screen(pane)?))
 }
 
@@ -90,7 +97,9 @@ pub fn refusal(id: &str, pane: &str, phrase: &str, by_user: bool) -> String {
     } else {
         "answer it first (`thread read` shows it, `thread keys` answers it)".to_string()
     };
-    format!("trust_screen: {id}'s pane {pane} shows a trust screen (\"{phrase}\"); nothing is typed into it; {who}")
+    format!(
+        "trust_screen: {id}'s pane {pane} shows a trust screen (\"{phrase}\"); nothing is typed into it; {who}"
+    )
 }
 
 #[cfg(test)]
@@ -107,7 +116,13 @@ mod tests {
         assert_eq!(detect("codex", codex_hooks), Some("Hooks need review"));
         let old_codex = "  Do you trust the contents of this directory?\n\u{1b}[1m›\u{1b}[0m 1. Yes, continue\n  2. No, quit\n";
         assert!(detect("codex", old_codex).is_some());
-        assert!(detect("gemini", "│ Do you trust this folder?\n│ ● 1. Trust folder (demo)\n").is_some());
+        assert!(
+            detect(
+                "gemini",
+                "│ Do you trust this folder?\n│ ● 1. Trust folder (demo)\n"
+            )
+            .is_some()
+        );
         assert!(detect("copilot", "Confirm folder trust\n❯ 1. Yes\n").is_some());
         // Styling between words does not hide it.
         assert!(detect("kiro", "Hooks \u{1b}[1mneed\u{1b}[0m   review\n").is_some());
@@ -117,10 +132,18 @@ mod tests {
     fn ordinary_screens_and_quoted_phrases_are_not_trust_screens() {
         let rule = "─".repeat(40);
         // A transcript quoting the dialog above an empty input box.
-        let quoted = format!("the dialog said \"Do you trust the files in this folder?\"\n{rule}\n❯ \n{rule}\n");
+        let quoted = format!(
+            "the dialog said \"Do you trust the files in this folder?\"\n{rule}\n❯ \n{rule}\n"
+        );
         assert_eq!(detect("claude", &quoted), None);
-        assert_eq!(detect("codex", "  Welcome to Codex\n› 1. Sign in with ChatGPT\n"), None);
-        assert_eq!(detect("claude", "Allow this edit?\n❯ 1. Yes\n  2. No\n"), None);
+        assert_eq!(
+            detect("codex", "  Welcome to Codex\n› 1. Sign in with ChatGPT\n"),
+            None
+        );
+        assert_eq!(
+            detect("claude", "Allow this edit?\n❯ 1. Yes\n  2. No\n"),
+            None
+        );
         assert_eq!(detect("claude", ""), None);
     }
 }

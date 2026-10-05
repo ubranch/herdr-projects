@@ -173,7 +173,8 @@ pub fn home_report_path(project: &Project, id: &str) -> PathBuf {
 pub fn load(project: &Project, id: &str) -> Result<Thread> {
     validate_id(id)?;
     let path = record_path(project, id);
-    let text = std::fs::read_to_string(&path).with_context(|| format!("no thread `{id}` in `{}`", project.slug))?;
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("no thread `{id}` in `{}`", project.slug))?;
     toml::from_str(&text).with_context(|| format!("{} does not parse", path.display()))
 }
 
@@ -192,7 +193,10 @@ pub fn list(project: &Project) -> Vec<Thread> {
 }
 
 fn write_record(project: &Project, thread: &Thread) -> Result<()> {
-    write_atomic(&record_path(project, &thread.id), toml::to_string(thread)?.as_bytes())
+    write_atomic(
+        &record_path(project, &thread.id),
+        toml::to_string(thread)?.as_bytes(),
+    )
 }
 
 /// Read-modify-write under the project lock: re-reads the record, lets `change`
@@ -280,7 +284,11 @@ pub fn next_lines(report: &str) -> Vec<String> {
         let text = text
             .strip_prefix("- ")
             .or_else(|| text.strip_prefix("* "))
-            .or_else(|| text.split_once(". ").filter(|(n, _)| n.chars().all(|c| c.is_ascii_digit())).map(|(_, rest)| rest))
+            .or_else(|| {
+                text.split_once(". ")
+                    .filter(|(n, _)| n.chars().all(|c| c.is_ascii_digit()))
+                    .map(|(_, rest)| rest)
+            })
             .unwrap_or(text)
             .trim();
         if !text.is_empty() {
@@ -300,13 +308,22 @@ pub fn all_next(project: &Project, id: &str) -> Vec<String> {
     let report = std::fs::read_to_string(home_report_path(project, id)).unwrap_or_default();
     let mut lines = next_lines(&report);
     let extra = std::fs::read_to_string(extra_next_path(project, id)).unwrap_or_default();
-    lines.extend(extra.lines().map(str::trim).filter(|l| !l.is_empty()).map(|l| l.trim_start_matches("- ").to_string()));
+    lines.extend(
+        extra
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(|l| l.trim_start_matches("- ").to_string()),
+    );
     lines
 }
 
 /// `<agent working directory>/.herdr-project/<slug>-<id>`, for every kind.
 pub fn thread_dir(cwd: &str, slug: &str, id: &str) -> String {
-    thread_path(cwd.trim_end_matches('/'), &[".herdr-project/", slug, "-", id])
+    thread_path(
+        cwd.trim_end_matches('/'),
+        &[".herdr-project/", slug, "-", id],
+    )
 }
 
 /// POSIX paths belong to remote machines even on a Windows host. Only a
@@ -315,9 +332,14 @@ pub fn thread_dir(cwd: &str, slug: &str, id: &str) -> String {
 /// otherwise interpret as UNC; canonical native UNC paths start with `\\`.
 fn thread_path(base: &str, suffix: &[&str]) -> String {
     let native = cfg!(windows) && !base.starts_with('/') && Path::new(base).is_absolute();
-    let base = if native { base.trim_end_matches(['/', '\\']) } else { base };
+    let base = if native {
+        base.trim_end_matches(['/', '\\'])
+    } else {
+        base
+    };
     let separator = if native { '\\' } else { '/' };
-    let mut path = String::with_capacity(base.len() + 1 + suffix.iter().map(|part| part.len()).sum::<usize>());
+    let mut path =
+        String::with_capacity(base.len() + 1 + suffix.iter().map(|part| part.len()).sum::<usize>());
     path.push_str(base);
     path.push(separator);
     for part in suffix {
@@ -365,22 +387,44 @@ pub struct BriefInput<'a> {
 /// the coordinator's or the ticker's settings.
 fn brief_header(input: &BriefInput) -> String {
     let mut out = String::from("# Project\n\n");
-    out.push_str(&format!("- Project: {} (`{}`)\n", input.project_name, input.slug));
-    out.push_str(&format!("- Goal: {}\n", if input.goal.trim().is_empty() { "(none set)" } else { input.goal.trim() }));
+    out.push_str(&format!(
+        "- Project: {} (`{}`)\n",
+        input.project_name, input.slug
+    ));
+    out.push_str(&format!(
+        "- Goal: {}\n",
+        if input.goal.trim().is_empty() {
+            "(none set)"
+        } else {
+            input.goal.trim()
+        }
+    ));
     if input.repos.is_empty() {
         out.push_str("- Repos: (none)\n");
     } else {
         out.push_str("- Repos:\n");
         for repo in input.repos {
             match &repo.machine {
-                Some(machine) => out.push_str(&format!("  - {} on machine `{machine}`\n", repo.path)),
+                Some(machine) => {
+                    out.push_str(&format!("  - {} on machine `{machine}`\n", repo.path))
+                }
                 None => out.push_str(&format!("  - {} (local)\n", repo.path)),
             }
         }
     }
-    let uploads_note = if input.remote { " (on the home machine; not copied to yours)" } else { "" };
-    out.push_str(&format!("- Uploads, files from the user: `{}`{uploads_note}\n", input.uploads_path));
-    out.push_str(&format!("- Library, files for the user: `{}`\n", input.library_path));
+    let uploads_note = if input.remote {
+        " (on the home machine; not copied to yours)"
+    } else {
+        ""
+    };
+    out.push_str(&format!(
+        "- Uploads, files from the user: `{}`{uploads_note}\n",
+        input.uploads_path
+    ));
+    out.push_str(&format!(
+        "- Library, files for the user: `{}`\n",
+        input.library_path
+    ));
     out.push_str(&format!("- Report: `{}`\n", input.report_path));
     out
 }
@@ -443,7 +487,11 @@ pub fn brief_for(project: &Project, thread: &Thread, task: &str, restart: bool) 
     let (settings, instructions) = project.read_project_md()?;
     let project_name = project::display_name(&settings.name, &project.slug);
     let uploads = project.dir().join("uploads").to_string_lossy().into_owned();
-    let prefix = if thread.is_remote() { String::new() } else { crate::coordinator::current_prefix(&project.root).unwrap_or_default() };
+    let prefix = if thread.is_remote() {
+        String::new()
+    } else {
+        crate::coordinator::current_prefix(&project.root).unwrap_or_default()
+    };
     let memory_index = std::fs::read_to_string(project.dir().join("MEMORY.md")).unwrap_or_default();
     let mut names: Vec<String> = std::fs::read_dir(project.dir().join("memory"))
         .map(|entries| {
@@ -461,7 +509,10 @@ pub fn brief_for(project: &Project, thread: &Thread, task: &str, restart: bool) 
             let path = project.dir().join("memory").join(&name);
             // Regular files only: a symbolic link in memory/ is never followed.
             let regular = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file());
-            regular.then(|| std::fs::read_to_string(&path).ok()).flatten().map(|text| (name, text))
+            regular
+                .then(|| std::fs::read_to_string(&path).ok())
+                .flatten()
+                .map(|text| (name, text))
         })
         .collect();
     Ok(compose_brief(&BriefInput {
@@ -572,12 +623,16 @@ pub struct Live {
 impl Live {
     /// The agent said it is waiting for the user and has not started working since.
     pub fn self_waiting(&self) -> bool {
-        self.self_report.as_ref().is_some_and(|r| r.waiting()) && self.agent_state.as_deref() != Some("working")
+        self.self_report.as_ref().is_some_and(|r| r.waiting())
+            && self.agent_state.as_deref() != Some("working")
     }
 
     /// The agent reported progress under 100% within the activity TTL.
     pub fn self_working(&self) -> bool {
-        self.self_report.as_ref().is_some_and(|r| !r.done() && !r.waiting()) && self.report_age_secs < (crate::progress::ACTIVITY_TTL_MS / 1000) as i64
+        self.self_report
+            .as_ref()
+            .is_some_and(|r| !r.done() && !r.waiting())
+            && self.report_age_secs < (crate::progress::ACTIVITY_TTL_MS / 1000) as i64
     }
 }
 
@@ -607,7 +662,8 @@ pub fn group(thread: &Thread, live: &Live, now: jiff::Timestamp) -> Group {
     }
     // 3: a failed start, a dead pane, or a launch stuck on a dialog.
     let stuck_launch = thread.prompt_pending
-        && (thread.brief_stuck || (state.is_some_and(|s| !ready_state(s)) && live.state_secs >= NOT_READY_SECS));
+        && (thread.brief_stuck
+            || (state.is_some_and(|s| !ready_state(s)) && live.state_secs >= NOT_READY_SECS));
     // A pane closed after the thread wrote its report is finished work, not
     // a thread that needs the user.
     if thread.status == Status::Failed || (!live.pane_exists && !has_report) || stuck_launch {
@@ -626,11 +682,15 @@ pub fn group(thread: &Thread, live: &Live, now: jiff::Timestamp) -> Group {
         return Group::Landing;
     }
     let new_report = has_report && thread.report_hash != thread.acked_report_hash;
-    if (new_report || (has_report && pr_open)) && !thread.prompt_pending && state != Some("working") {
+    if (new_report || (has_report && pr_open)) && !thread.prompt_pending && state != Some("working")
+    {
         return Group::ReadyForReview;
     }
     // 6: working by the harness or by its own report.
-    if matches!(state, Some("working") | Some("blocked")) || thread.prompt_pending || live.self_working() {
+    if matches!(state, Some("working") | Some("blocked"))
+        || thread.prompt_pending
+        || live.self_working()
+    {
         return Group::Working;
     }
     // 7
@@ -655,7 +715,9 @@ pub fn agent_matches(thread: &Thread, agent: &Agent) -> bool {
         // Not started by the binary: whatever herdr reported at adoption.
         Kind::Adopted => ids,
         _ => {
-            ids && (thread.agent.is_empty() || agent.agent.is_empty() || agent.agent == thread.agent)
+            ids && (thread.agent.is_empty()
+                || agent.agent.is_empty()
+                || agent.agent == thread.agent)
                 && (agent.name.is_empty() || agent.name == thread.agent_name)
         }
     }
@@ -671,7 +733,10 @@ fn cwd_matches(thread: &Thread, cwd: &str) -> bool {
 
 /// Our agent, found by `agent_matches`, running without a name: re-apply it.
 pub fn needs_rename(thread: &Thread, agent: &Agent) -> bool {
-    thread.kind != Kind::Adopted && !thread.agent_name.is_empty() && agent.name.is_empty() && agent_matches(thread, agent)
+    thread.kind != Kind::Adopted
+        && !thread.agent_name.is_empty()
+        && agent.name.is_empty()
+        && agent_matches(thread, agent)
 }
 
 /// Live state from one `agent list` and one `pane list`. `recorded` supplies
@@ -681,7 +746,9 @@ pub fn live_state(thread: &Thread, agents: &[Agent], panes: &[Pane], now: jiff::
     let agent = agents.iter().find(|a| agent_matches(thread, a));
     let pane_exists = agent.is_some() || panes.iter().any(|p| pane_matches(thread, p));
     // A pane whose ids match but which holds someone else's agent is not ours.
-    let foreign = agent.is_none() && agents.iter().any(|a| a.pane_id == thread.pane_id) && thread.kind != Kind::Adopted;
+    let foreign = agent.is_none()
+        && agents.iter().any(|a| a.pane_id == thread.pane_id)
+        && thread.kind != Kind::Adopted;
     let agent_state = agent.map(|a| a.agent_status.clone());
     let state_secs = match &agent_state {
         Some(state) if *state == thread.last_state => seconds_since(&thread.last_state_change, now),
@@ -699,7 +766,14 @@ pub fn live_state(thread: &Thread, agents: &[Agent], panes: &[Pane], now: jiff::
 /// `live_state` plus the agent's own report from `<root>/.progress/`, matched
 /// by pane id and terminal id. Remote threads have none (the record is written
 /// on the machine where the agent runs).
-pub fn live_with_report(thread: &Thread, agents: &[Agent], panes: &[Pane], now: jiff::Timestamp, root: &Path, socket: &str) -> Live {
+pub fn live_with_report(
+    thread: &Thread,
+    agents: &[Agent],
+    panes: &[Pane],
+    now: jiff::Timestamp,
+    root: &Path,
+    socket: &str,
+) -> Live {
     let mut live = live_state(thread, agents, panes, now);
     if thread.is_remote() || !live.pane_exists {
         return live;
@@ -708,7 +782,12 @@ pub fn live_with_report(thread: &Thread, agents: &[Agent], panes: &[Pane], now: 
         .iter()
         .find(|a| agent_matches(thread, a))
         .map(|a| a.terminal_id.clone())
-        .or_else(|| panes.iter().find(|p| pane_matches(thread, p)).map(|p| p.terminal_id.clone()))
+        .or_else(|| {
+            panes
+                .iter()
+                .find(|p| pane_matches(thread, p))
+                .map(|p| p.terminal_id.clone())
+        })
         .unwrap_or_default();
     if let Some(record) = crate::progress::self_report(root, socket, &thread.pane_id, &terminal) {
         live.report_age_secs = now.as_second() - record.reported_at;
@@ -728,7 +807,10 @@ pub enum CopyOutcome {
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn is_real_dir(path: &Path) -> bool {
@@ -740,7 +822,10 @@ fn is_symlink(path: &Path) -> bool {
 }
 
 fn check_copy_deadline(deadline: Instant) -> Result<()> {
-    ensure!(Instant::now() < deadline, "the local copy exceeded its 60 second timeout");
+    ensure!(
+        Instant::now() < deadline,
+        "the local copy exceeded its 60 second timeout"
+    );
     Ok(())
 }
 
@@ -748,7 +833,9 @@ fn single_link(_file: &std::fs::File, _metadata: &std::fs::Metadata) -> std::io:
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
         let mut info = BY_HANDLE_FILE_INFORMATION::default();
         // The handle stays open throughout validation and the subsequent read.
         if unsafe { GetFileInformationByHandle(_file.as_raw_handle(), &mut info) } == 0 {
@@ -790,7 +877,9 @@ fn library_size(dir: &Path, deadline: Instant) -> Result<u64> {
         } else {
             0
         };
-        bytes = bytes.checked_add(size).context("the library size overflowed")?;
+        bytes = bytes
+            .checked_add(size)
+            .context("the library size overflowed")?;
     }
     Ok(bytes)
 }
@@ -800,7 +889,12 @@ struct CopyBudget {
     deadline: Instant,
 }
 
-fn copy_contents(input: &mut std::fs::File, output: &mut std::fs::File, budget: &mut CopyBudget, buffer: &mut [u8]) -> Result<bool> {
+fn copy_contents(
+    input: &mut std::fs::File,
+    output: &mut std::fs::File,
+    budget: &mut CopyBudget,
+    buffer: &mut [u8],
+) -> Result<bool> {
     loop {
         check_copy_deadline(budget.deadline)?;
         // Read at most one byte beyond the remaining cap to distinguish EOF.
@@ -821,23 +915,39 @@ fn copy_contents(input: &mut std::fs::File, output: &mut std::fs::File, budget: 
 
 fn make_copy_dir(path: &Path) -> Result<()> {
     match std::fs::symlink_metadata(path) {
-        Ok(meta) => ensure!(meta.is_dir() && !meta.file_type().is_symlink(), "{} is not a real directory; the library was not copied", path.display()),
+        Ok(meta) => ensure!(
+            meta.is_dir() && !meta.file_type().is_symlink(),
+            "{} is not a real directory; the library was not copied",
+            path.display()
+        ),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(path)?,
         Err(error) => return Err(error.into()),
     }
     Ok(())
 }
 
-fn copy_library_tree(source: &Path, target: &Path, budget: &mut CopyBudget, buffer: &mut [u8], notes: &mut Vec<String>) -> Result<bool> {
+fn copy_library_tree(
+    source: &Path,
+    target: &Path,
+    budget: &mut CopyBudget,
+    buffer: &mut [u8],
+    notes: &mut Vec<String>,
+) -> Result<bool> {
     check_copy_deadline(budget.deadline)?;
-    ensure!(is_real_dir(source) && is_real_dir(target), "the library source or destination is no longer a real directory");
+    ensure!(
+        is_real_dir(source) && is_real_dir(target),
+        "the library source or destination is no longer a real directory"
+    );
     for entry in std::fs::read_dir(source)? {
         check_copy_deadline(budget.deadline)?;
         let entry = entry?;
         let path = entry.path();
         let meta = std::fs::symlink_metadata(&path)?;
         if meta.file_type().is_symlink() {
-            notes.push(format!("{} is a symbolic link; it was not copied", path.display()));
+            notes.push(format!(
+                "{} is a symbolic link; it was not copied",
+                path.display()
+            ));
             continue;
         }
         let dest = target.join(entry.file_name());
@@ -848,15 +958,25 @@ fn copy_library_tree(source: &Path, target: &Path, budget: &mut CopyBudget, buff
             }
         } else if meta.is_file() {
             let Some((mut input, metadata)) = opened_private_file(&path)? else {
-                notes.push(format!("{} is not a singly linked regular file; it was not copied", path.display()));
+                notes.push(format!(
+                    "{} is not a singly linked regular file; it was not copied",
+                    path.display()
+                ));
                 continue;
             };
             if let Ok(meta) = std::fs::symlink_metadata(&dest) {
-                ensure!(meta.is_file() && !meta.file_type().is_symlink(), "{} is not a regular file; it was not overwritten", dest.display());
+                ensure!(
+                    meta.is_file() && !meta.file_type().is_symlink(),
+                    "{} is not a regular file; it was not overwritten",
+                    dest.display()
+                );
             }
             // Fresh staging prevents writing through a destination hard link.
             let tmp = target.join(format!(".herdr-projects-copy-{}.tmp", std::process::id()));
-            let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+            let mut output = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?;
             let copied = (|| -> Result<bool> {
                 if !copy_contents(&mut input, &mut output, budget, buffer)? {
                     return Ok(false);
@@ -879,7 +999,10 @@ fn copy_library_tree(source: &Path, target: &Path, budget: &mut CopyBudget, buff
                 return Ok(false);
             }
         } else {
-            notes.push(format!("{} is not a regular file; it was not copied", path.display()));
+            notes.push(format!(
+                "{} is not a regular file; it was not copied",
+                path.display()
+            ));
         }
     }
     Ok(true)
@@ -893,7 +1016,8 @@ pub fn local_report_hash(thread: &Thread) -> Option<String> {
         return None;
     }
     let report = dir.join("report.md");
-    if !std::fs::symlink_metadata(&report).is_ok_and(|m| m.is_file() && !m.file_type().is_symlink()) {
+    if !std::fs::symlink_metadata(&report).is_ok_and(|m| m.is_file() && !m.file_type().is_symlink())
+    {
         return None;
     }
     let (mut file, _) = opened_private_file(&report).ok()??;
@@ -918,7 +1042,9 @@ pub struct Copied {
 }
 
 fn read_private_report(path: &Path) -> Result<Option<Vec<u8>>> {
-    let Some((mut file, _)) = opened_private_file(path)? else { return Ok(None) };
+    let Some((mut file, _)) = opened_private_file(path)? else {
+        return Ok(None);
+    };
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 8192];
     let deadline = Instant::now() + LOCAL_COPY_TIMEOUT;
@@ -941,11 +1067,17 @@ pub fn copy_home_local(project: &Project, thread: &Thread, with_library: bool) -
     let mut notes = Vec::new();
     if thread.thread_dir.is_empty() || !dir.exists() {
         // Nothing was ever written, so nothing can be lost.
-        return Copied { outcome: CopyOutcome::Complete, report_hash: None };
+        return Copied {
+            outcome: CopyOutcome::Complete,
+            report_hash: None,
+        };
     }
     if !is_real_dir(dir) {
         return Copied {
-            outcome: CopyOutcome::Partial(vec![format!("{} is a symbolic link; nothing was copied", dir.display())]),
+            outcome: CopyOutcome::Partial(vec![format!(
+                "{} is a symbolic link; nothing was copied",
+                dir.display()
+            )]),
             report_hash: None,
         };
     }
@@ -954,71 +1086,133 @@ pub fn copy_home_local(project: &Project, thread: &Thread, with_library: bool) -
     let mut report_hash = None;
     match std::fs::symlink_metadata(&report) {
         Err(_) => {}
-        Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => match read_private_report(&report) {
-            Ok(Some(bytes)) => {
-                let hash = sha256_hex(&bytes);
-                if hash != thread.report_hash || !home_report_path(project, &thread.id).is_file() {
-                    let written = project
-                        .lock()
-                        .and_then(|_lock| write_atomic(&home_report_path(project, &thread.id), &bytes));
-                    if let Err(error) = written {
-                        return Copied { outcome: CopyOutcome::Failed(format!("{error:#}")), report_hash: None };
+        Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => {
+            match read_private_report(&report) {
+                Ok(Some(bytes)) => {
+                    let hash = sha256_hex(&bytes);
+                    if hash != thread.report_hash
+                        || !home_report_path(project, &thread.id).is_file()
+                    {
+                        let written = project.lock().and_then(|_lock| {
+                            write_atomic(&home_report_path(project, &thread.id), &bytes)
+                        });
+                        if let Err(error) = written {
+                            return Copied {
+                                outcome: CopyOutcome::Failed(format!("{error:#}")),
+                                report_hash: None,
+                            };
+                        }
                     }
+                    report_hash = Some(hash);
                 }
-                report_hash = Some(hash);
+                Ok(None) => notes.push(format!(
+                    "{} is not a singly linked regular file; it was not copied",
+                    report.display()
+                )),
+                Err(error) => {
+                    return Copied {
+                        outcome: CopyOutcome::Failed(format!(
+                            "could not read {}: {error}",
+                            report.display()
+                        )),
+                        report_hash: None,
+                    };
+                }
             }
-            Ok(None) => notes.push(format!("{} is not a singly linked regular file; it was not copied", report.display())),
-            Err(error) => {
-                return Copied { outcome: CopyOutcome::Failed(format!("could not read {}: {error}", report.display())), report_hash: None };
-            }
-        },
-        Ok(_) => notes.push(format!("{} is not a regular file; it was not copied", report.display())),
+        }
+        Ok(_) => notes.push(format!(
+            "{} is not a regular file; it was not copied",
+            report.display()
+        )),
     }
 
     if with_library {
         let library = dir.join("library");
         if is_symlink(&library) {
-            notes.push(format!("{} is a symbolic link; the library was not copied", library.display()));
+            notes.push(format!(
+                "{} is a symbolic link; the library was not copied",
+                library.display()
+            ));
         } else if is_real_dir(&library) {
             match copy_library_local(project, thread, &library) {
                 Ok(mut skipped) => notes.append(&mut skipped),
-                Err(error) => return Copied { outcome: CopyOutcome::Failed(format!("{error:#}")), report_hash },
+                Err(error) => {
+                    return Copied {
+                        outcome: CopyOutcome::Failed(format!("{error:#}")),
+                        report_hash,
+                    };
+                }
             }
         }
     }
 
-    let outcome = if notes.is_empty() { CopyOutcome::Complete } else { CopyOutcome::Partial(notes) };
-    Copied { outcome, report_hash }
+    let outcome = if notes.is_empty() {
+        CopyOutcome::Complete
+    } else {
+        CopyOutcome::Partial(notes)
+    };
+    Copied {
+        outcome,
+        report_hash,
+    }
 }
 
 /// The same copy for a thread on a saved machine: the report with `scp`, the
 /// library with rsync over ssh, after checking on the machine (without
 /// following links) what is a real directory and a regular file.
-pub fn copy_home_remote(project: &Project, thread: &Thread, with_library: bool, runner: &dyn Runner, target: &str) -> Copied {
+pub fn copy_home_remote(
+    project: &Project,
+    thread: &Thread,
+    with_library: bool,
+    runner: &dyn Runner,
+    target: &str,
+) -> Copied {
     use crate::remote;
-    let failed = |error: String| Copied { outcome: CopyOutcome::Failed(error), report_hash: None };
+    let failed = |error: String| Copied {
+        outcome: CopyOutcome::Failed(error),
+        report_hash: None,
+    };
     if thread.thread_dir.is_empty() {
-        return Copied { outcome: CopyOutcome::Complete, report_hash: None };
+        return Copied {
+            outcome: CopyOutcome::Complete,
+            report_hash: None,
+        };
     }
     let found = match remote::layout(runner, target, &thread.thread_dir) {
         Ok(found) => found,
         Err(error) => return failed(format!("{error:#}")),
     };
     if found.absent {
-        return Copied { outcome: CopyOutcome::Complete, report_hash: None };
+        return Copied {
+            outcome: CopyOutcome::Complete,
+            report_hash: None,
+        };
     }
     if !found.dir_ok {
-        return Copied { outcome: CopyOutcome::Partial(vec![format!("{} on {target} is a symbolic link; nothing was copied", thread.thread_dir)]), report_hash: None };
+        return Copied {
+            outcome: CopyOutcome::Partial(vec![format!(
+                "{} on {target} is a symbolic link; nothing was copied",
+                thread.thread_dir
+            )]),
+            report_hash: None,
+        };
     }
     let mut notes = Vec::new();
     let mut report_hash = None;
     if found.report_ok {
-        let tmp = project.dir().join("threads").join(format!(".{}.fetch.{}.tmp", thread.id, std::process::id()));
-        let fetched = remote::fetch_file(runner, target, &thread.report_path(), &tmp).and_then(|()| Ok(std::fs::read(&tmp)?));
+        let tmp = project.dir().join("threads").join(format!(
+            ".{}.fetch.{}.tmp",
+            thread.id,
+            std::process::id()
+        ));
+        let fetched = remote::fetch_file(runner, target, &thread.report_path(), &tmp)
+            .and_then(|()| Ok(std::fs::read(&tmp)?));
         let _ = std::fs::remove_file(&tmp);
         match fetched {
             Ok(bytes) => {
-                let written = project.lock().and_then(|_lock| write_atomic(&home_report_path(project, &thread.id), &bytes));
+                let written = project
+                    .lock()
+                    .and_then(|_lock| write_atomic(&home_report_path(project, &thread.id), &bytes));
                 if let Err(error) = written {
                     return failed(format!("{error:#}"));
                 }
@@ -1027,16 +1221,31 @@ pub fn copy_home_remote(project: &Project, thread: &Thread, with_library: bool, 
             Err(error) => return failed(format!("{error:#}")),
         }
     } else if found.report_is_other {
-        notes.push(format!("{} on {target} is not a regular file; it was not copied", thread.report_path()));
+        notes.push(format!(
+            "{} on {target} is not a regular file; it was not copied",
+            thread.report_path()
+        ));
     }
 
     if with_library {
         if found.library_is_link {
-            notes.push(format!("{} on {target} is a symbolic link; the library was not copied", thread.library_path()));
+            notes.push(format!(
+                "{} on {target} is a symbolic link; the library was not copied",
+                thread.library_path()
+            ));
         } else if found.library_ok && found.library_kb > LIBRARY_CAP_KB {
-            notes.push(format!("the library is {} MB, over the {} MB cap; nothing from it was copied", found.library_kb / 1024, LIBRARY_CAP_KB / 1024));
+            notes.push(format!(
+                "the library is {} MB, over the {} MB cap; nothing from it was copied",
+                found.library_kb / 1024,
+                LIBRARY_CAP_KB / 1024
+            ));
         } else if found.library_ok {
-            notes.extend(found.symlinks.iter().map(|p| format!("{p} is a symbolic link; it was not copied")));
+            notes.extend(
+                found
+                    .symlinks
+                    .iter()
+                    .map(|p| format!("{p} is a symbolic link; it was not copied")),
+            );
             let target_dir = project.dir().join("library").join(&thread.id);
             let made = project.lock().and_then(|_lock| {
                 if !target_dir.is_dir() {
@@ -1045,15 +1254,30 @@ pub fn copy_home_remote(project: &Project, thread: &Thread, with_library: bool, 
                 Ok(())
             });
             if let Err(error) = made {
-                return Copied { outcome: CopyOutcome::Failed(format!("{error:#}")), report_hash };
+                return Copied {
+                    outcome: CopyOutcome::Failed(format!("{error:#}")),
+                    report_hash,
+                };
             }
-            if let Err(error) = remote::fetch_dir(runner, target, &thread.library_path(), &target_dir) {
-                return Copied { outcome: CopyOutcome::Failed(format!("{error:#}")), report_hash };
+            if let Err(error) =
+                remote::fetch_dir(runner, target, &thread.library_path(), &target_dir)
+            {
+                return Copied {
+                    outcome: CopyOutcome::Failed(format!("{error:#}")),
+                    report_hash,
+                };
             }
         }
     }
-    let outcome = if notes.is_empty() { CopyOutcome::Complete } else { CopyOutcome::Partial(notes) };
-    Copied { outcome, report_hash }
+    let outcome = if notes.is_empty() {
+        CopyOutcome::Complete
+    } else {
+        CopyOutcome::Partial(notes)
+    };
+    Copied {
+        outcome,
+        report_hash,
+    }
 }
 
 fn copy_library_local(project: &Project, thread: &Thread, library: &Path) -> Result<Vec<String>> {
@@ -1070,14 +1294,24 @@ fn copy_library_local(project: &Project, thread: &Thread, library: &Path) -> Res
     let _lock = project.lock()?;
     check_copy_deadline(deadline)?;
     let parent = project.dir().join("library");
-    ensure!(is_real_dir(&parent) && !is_symlink(&parent), "{} is not a real directory; the library was not copied", parent.display());
+    ensure!(
+        is_real_dir(&parent) && !is_symlink(&parent),
+        "{} is not a real directory; the library was not copied",
+        parent.display()
+    );
     let target = parent.join(&thread.id);
     // create_dir, not create_dir_all: never recreate a deleted project.
     make_copy_dir(&target)?;
     let source = crate::paths::canonicalize(library)?;
     let target = crate::paths::canonicalize(&target)?;
-    ensure!(!source.starts_with(&target) && !target.starts_with(&source), "the library source and destination overlap; nothing was copied");
-    let mut budget = CopyBudget { remaining: LIBRARY_CAP_KB * 1024, deadline };
+    ensure!(
+        !source.starts_with(&target) && !target.starts_with(&source),
+        "the library source and destination overlap; nothing was copied"
+    );
+    let mut budget = CopyBudget {
+        remaining: LIBRARY_CAP_KB * 1024,
+        deadline,
+    };
     let mut buffer = [0_u8; 8192];
     copy_library_tree(&source, &target, &mut budget, &mut buffer, &mut notes)?;
     Ok(notes)
@@ -1107,110 +1341,265 @@ mod tests {
     }
 
     fn live(state: Option<&str>, secs: i64) -> Live {
-        Live { pane_exists: true, agent_state: state.map(str::to_string), state_secs: secs, ..Live::default() }
+        Live {
+            pane_exists: true,
+            agent_state: state.map(str::to_string),
+            state_secs: secs,
+            ..Live::default()
+        }
     }
 
     #[test]
     fn row1_resolved_wins_over_everything() {
-        let t = Thread { status: Status::Resolved, prompt_pending: true, ..open_thread() };
-        assert_eq!(group(&t, &live(Some("blocked"), 999), now()), Group::Resolved);
+        let t = Thread {
+            status: Status::Resolved,
+            prompt_pending: true,
+            ..open_thread()
+        };
+        assert_eq!(
+            group(&t, &live(Some("blocked"), 999), now()),
+            Group::Resolved
+        );
     }
 
     #[test]
     fn row2_starting_is_working_for_five_minutes() {
-        let young = Thread { status: Status::Starting, created: ago(10), ..open_thread() };
+        let young = Thread {
+            status: Status::Starting,
+            created: ago(10),
+            ..open_thread()
+        };
         assert_eq!(group(&young, &Live::default(), now()), Group::Working);
-        let old = Thread { status: Status::Starting, created: ago(301), ..open_thread() };
+        let old = Thread {
+            status: Status::Starting,
+            created: ago(301),
+            ..open_thread()
+        };
         assert_eq!(group(&old, &Live::default(), now()), Group::WaitingOnYou);
     }
 
     #[test]
     fn row3_waiting_on_you() {
-        let failed = Thread { status: Status::Failed, ..open_thread() };
-        assert_eq!(group(&failed, &live(Some("working"), 0), now()), Group::WaitingOnYou);
+        let failed = Thread {
+            status: Status::Failed,
+            ..open_thread()
+        };
+        assert_eq!(
+            group(&failed, &live(Some("working"), 0), now()),
+            Group::WaitingOnYou
+        );
 
-        let pending = Thread { prompt_pending: true, ..open_thread() };
-        assert_eq!(group(&pending, &live(Some("blocked"), 60), now()), Group::WaitingOnYou);
-        assert_eq!(group(&pending, &live(Some("unknown"), 60), now()), Group::WaitingOnYou);
+        let pending = Thread {
+            prompt_pending: true,
+            ..open_thread()
+        };
+        assert_eq!(
+            group(&pending, &live(Some("blocked"), 60), now()),
+            Group::WaitingOnYou
+        );
+        assert_eq!(
+            group(&pending, &live(Some("unknown"), 60), now()),
+            Group::WaitingOnYou
+        );
 
-        let gone = Live { pane_exists: false, agent_state: None, state_secs: 0, ..Live::default() };
+        let gone = Live {
+            pane_exists: false,
+            agent_state: None,
+            state_secs: 0,
+            ..Live::default()
+        };
         assert_eq!(group(&open_thread(), &gone, now()), Group::WaitingOnYou);
 
-        assert_eq!(group(&open_thread(), &live(Some("blocked"), 30), now()), Group::WaitingOnYou);
+        assert_eq!(
+            group(&open_thread(), &live(Some("blocked"), 30), now()),
+            Group::WaitingOnYou
+        );
     }
 
     #[test]
     fn row4_working_including_a_launch_in_progress() {
-        assert_eq!(group(&open_thread(), &live(Some("working"), 0), now()), Group::Working);
+        assert_eq!(
+            group(&open_thread(), &live(Some("working"), 0), now()),
+            Group::Working
+        );
         // A permission prompt answered quickly never shows as waiting.
-        assert_eq!(group(&open_thread(), &live(Some("blocked"), 29), now()), Group::Working);
+        assert_eq!(
+            group(&open_thread(), &live(Some("blocked"), 29), now()),
+            Group::Working
+        );
         // A new thread is Working, not Waiting on you, until an undetected-ready
         // agent has lasted 60 seconds.
-        let pending = Thread { prompt_pending: true, ..open_thread() };
+        let pending = Thread {
+            prompt_pending: true,
+            ..open_thread()
+        };
         assert_eq!(group(&pending, &live(None, 0), now()), Group::Working);
-        assert_eq!(group(&pending, &live(Some("unknown"), 59), now()), Group::Working);
-        assert_eq!(group(&pending, &live(Some("idle"), 500), now()), Group::Working);
+        assert_eq!(
+            group(&pending, &live(Some("unknown"), 59), now()),
+            Group::Working
+        );
+        assert_eq!(
+            group(&pending, &live(Some("idle"), 500), now()),
+            Group::Working
+        );
     }
 
     #[test]
     fn row5_landing_needs_open_and_approved() {
-        let t = Thread { report_hash: "h".into(), pr_state: "OPEN".into(), pr_review: "APPROVED".into(), ..open_thread() };
+        let t = Thread {
+            report_hash: "h".into(),
+            pr_state: "OPEN".into(),
+            pr_review: "APPROVED".into(),
+            ..open_thread()
+        };
         assert_eq!(group(&t, &live(Some("idle"), 0), now()), Group::Landing);
-        let t = Thread { pr_review: "CHANGES_REQUESTED".into(), ..t };
-        assert_eq!(group(&t, &live(Some("idle"), 0), now()), Group::ReadyForReview);
+        let t = Thread {
+            pr_review: "CHANGES_REQUESTED".into(),
+            ..t
+        };
+        assert_eq!(
+            group(&t, &live(Some("idle"), 0), now()),
+            Group::ReadyForReview
+        );
     }
 
     #[test]
     fn row6_ready_for_review_until_ack_or_while_pr_open() {
-        let t = Thread { report_hash: "h".into(), ..open_thread() };
-        assert_eq!(group(&t, &live(Some("done"), 0), now()), Group::ReadyForReview);
-        let acked = Thread { acked_report_hash: "h".into(), ..t.clone() };
+        let t = Thread {
+            report_hash: "h".into(),
+            ..open_thread()
+        };
+        assert_eq!(
+            group(&t, &live(Some("done"), 0), now()),
+            Group::ReadyForReview
+        );
+        let acked = Thread {
+            acked_report_hash: "h".into(),
+            ..t.clone()
+        };
         assert_eq!(group(&acked, &live(Some("done"), 0), now()), Group::Idle);
-        let with_pr = Thread { pr_state: "OPEN".into(), ..acked };
-        assert_eq!(group(&with_pr, &live(Some("done"), 0), now()), Group::ReadyForReview);
+        let with_pr = Thread {
+            pr_state: "OPEN".into(),
+            ..acked
+        };
+        assert_eq!(
+            group(&with_pr, &live(Some("done"), 0), now()),
+            Group::ReadyForReview
+        );
     }
 
     #[test]
     fn row7_idle_and_precedence() {
-        assert_eq!(group(&open_thread(), &live(Some("idle"), 0), now()), Group::Idle);
+        assert_eq!(
+            group(&open_thread(), &live(Some("idle"), 0), now()),
+            Group::Idle
+        );
         // Working (row 4) beats Ready for review (row 6).
-        let t = Thread { report_hash: "h".into(), ..open_thread() };
+        let t = Thread {
+            report_hash: "h".into(),
+            ..open_thread()
+        };
         assert_eq!(group(&t, &live(Some("working"), 0), now()), Group::Working);
         // Blocked for long (row 3) beats an approved pull request (row 5).
-        let t = Thread { pr_state: "OPEN".into(), pr_review: "APPROVED".into(), ..t };
-        assert_eq!(group(&t, &live(Some("blocked"), 31), now()), Group::WaitingOnYou);
+        let t = Thread {
+            pr_state: "OPEN".into(),
+            pr_review: "APPROVED".into(),
+            ..t
+        };
+        assert_eq!(
+            group(&t, &live(Some("blocked"), 31), now()),
+            Group::WaitingOnYou
+        );
     }
 
     #[test]
     fn a_closed_pane_needs_you_only_without_a_report() {
-        let gone = Live { pane_exists: false, ..Live::default() };
-        let t = Thread { report_hash: "h".into(), ..open_thread() };
+        let gone = Live {
+            pane_exists: false,
+            ..Live::default()
+        };
+        let t = Thread {
+            report_hash: "h".into(),
+            ..open_thread()
+        };
         assert_eq!(group(&t, &gone, now()), Group::ReadyForReview);
-        let acked = Thread { acked_report_hash: "h".into(), ..t };
+        let acked = Thread {
+            acked_report_hash: "h".into(),
+            ..t
+        };
         assert_eq!(group(&acked, &gone, now()), Group::Idle);
         assert_eq!(group(&open_thread(), &gone, now()), Group::WaitingOnYou);
     }
 
     fn reported(activity: &str, percent: Option<u8>, age: i64, state: &str) -> Live {
-        let record = crate::progress::Record { activity: activity.into(), percent, reported_at: 1, ..Default::default() };
-        Live { report_age_secs: age, self_report: Some(record), ..live(Some(state), 0) }
+        let record = crate::progress::Record {
+            activity: activity.into(),
+            percent,
+            reported_at: 1,
+            ..Default::default()
+        };
+        Live {
+            report_age_secs: age,
+            self_report: Some(record),
+            ..live(Some(state), 0)
+        }
     }
 
     #[test]
     fn self_reports_feed_the_group() {
         // Asked a question but the harness reads idle: needs you.
-        assert_eq!(group(&open_thread(), &reported("Waiting for you", Some(40), 5, "idle"), now()), Group::WaitingOnYou);
+        assert_eq!(
+            group(
+                &open_thread(),
+                &reported("Waiting for you", Some(40), 5, "idle"),
+                now()
+            ),
+            Group::WaitingOnYou
+        );
         // Waiting beats a new report, but not a harness that is working again.
-        let t = Thread { report_hash: "h".into(), ..open_thread() };
-        assert_eq!(group(&t, &reported("Waiting for you", None, 5, "idle"), now()), Group::WaitingOnYou);
-        assert_eq!(group(&t, &reported("Waiting for you", None, 5, "working"), now()), Group::Working);
+        let t = Thread {
+            report_hash: "h".into(),
+            ..open_thread()
+        };
+        assert_eq!(
+            group(&t, &reported("Waiting for you", None, 5, "idle"), now()),
+            Group::WaitingOnYou
+        );
+        assert_eq!(
+            group(&t, &reported("Waiting for you", None, 5, "working"), now()),
+            Group::Working
+        );
         // Under 100% and fresh: working, even between tool calls.
-        assert_eq!(group(&open_thread(), &reported("Testing changes", Some(55), 30, "idle"), now()), Group::Working);
+        assert_eq!(
+            group(
+                &open_thread(),
+                &reported("Testing changes", Some(55), 30, "idle"),
+                now()
+            ),
+            Group::Working
+        );
         // Stale after five minutes, and 100% is done.
-        assert_eq!(group(&open_thread(), &reported("Testing changes", Some(55), 400, "idle"), now()), Group::Idle);
-        assert_eq!(group(&open_thread(), &reported("Done", Some(100), 5, "idle"), now()), Group::Idle);
+        assert_eq!(
+            group(
+                &open_thread(),
+                &reported("Testing changes", Some(55), 400, "idle"),
+                now()
+            ),
+            Group::Idle
+        );
+        assert_eq!(
+            group(
+                &open_thread(),
+                &reported("Done", Some(100), 5, "idle"),
+                now()
+            ),
+            Group::Idle
+        );
         // A new report beats self-reported progress.
-        assert_eq!(group(&t, &reported("Polishing", Some(90), 5, "idle"), now()), Group::ReadyForReview);
+        assert_eq!(
+            group(&t, &reported("Polishing", Some(90), 5, "idle"), now()),
+            Group::ReadyForReview
+        );
     }
 
     #[test]
@@ -1260,7 +1649,10 @@ mod tests {
         assert!(!state.pane_exists);
         assert_eq!(state.agent_state, None);
         // Another kind in our pane is not ours either.
-        let codex = Agent { agent: "codex".into(), ..agent("", "/wt") };
+        let codex = Agent {
+            agent: "codex".into(),
+            ..agent("", "/wt")
+        };
         assert!(!agent_matches(&t, &codex));
     }
 
@@ -1284,28 +1676,67 @@ mod tests {
             spellings
         };
         for cwd in spellings {
-            let pane = Pane { pane_id: thread.pane_id.clone(), cwd: cwd.to_string_lossy().into_owned(), ..Pane::default() };
+            let pane = Pane {
+                pane_id: thread.pane_id.clone(),
+                cwd: cwd.to_string_lossy().into_owned(),
+                ..Pane::default()
+            };
             let ours = agent(&thread.agent_name, &pane.cwd);
             assert!(pane_matches(&thread, &pane));
             assert!(agent_matches(&thread, &ours));
             assert!(live_state(&thread, &[], std::slice::from_ref(&pane), now()).pane_exists);
             assert!(live_state(&thread, std::slice::from_ref(&ours), &[], now()).pane_exists);
-            let reused = Pane { cwd: other.to_string_lossy().into_owned(), ..pane.clone() };
+            let reused = Pane {
+                cwd: other.to_string_lossy().into_owned(),
+                ..pane.clone()
+            };
             assert!(!pane_matches(&thread, &reused));
-            assert!(!agent_matches(&thread, &agent(&thread.agent_name, &reused.cwd)));
+            assert!(!agent_matches(
+                &thread,
+                &agent(&thread.agent_name, &reused.cwd)
+            ));
             assert!(!live_state(&thread, &[], &[reused], now()).pane_exists);
-            assert!(!pane_matches(&thread, &Pane { pane_id: "w2:p9".into(), ..pane }));
-            assert!(!agent_matches(&thread, &Agent { name: "foreign".into(), ..ours.clone() }));
-            assert!(!agent_matches(&thread, &Agent { agent: "codex".into(), ..ours }));
+            assert!(!pane_matches(
+                &thread,
+                &Pane {
+                    pane_id: "w2:p9".into(),
+                    ..pane
+                }
+            ));
+            assert!(!agent_matches(
+                &thread,
+                &Agent {
+                    name: "foreign".into(),
+                    ..ours.clone()
+                }
+            ));
+            assert!(!agent_matches(
+                &thread,
+                &Agent {
+                    agent: "codex".into(),
+                    ..ours
+                }
+            ));
         }
     }
 
     #[test]
     fn remote_directory_spellings_are_not_interpreted_as_native_paths() {
-        let thread = Thread { machine: "box".into(), cwd: "/srv/worktree".into(), ..placed_thread(Kind::Worktree) };
-        assert!(agent_matches(&thread, &agent(&thread.agent_name, "/srv/worktree")));
+        let thread = Thread {
+            machine: "box".into(),
+            cwd: "/srv/worktree".into(),
+            ..placed_thread(Kind::Worktree)
+        };
+        assert!(agent_matches(
+            &thread,
+            &agent(&thread.agent_name, "/srv/worktree")
+        ));
         for cwd in ["/srv/worktree/", r"\srv\worktree", "/srv/worktree/child/.."] {
-            let pane = Pane { pane_id: thread.pane_id.clone(), cwd: cwd.into(), ..Pane::default() };
+            let pane = Pane {
+                pane_id: thread.pane_id.clone(),
+                cwd: cwd.into(),
+                ..Pane::default()
+            };
             assert!(!pane_matches(&thread, &pane));
             assert!(!agent_matches(&thread, &agent(&thread.agent_name, cwd)));
             assert!(!live_state(&thread, &[], &[pane], now()).pane_exists);
@@ -1317,7 +1748,12 @@ mod tests {
         // After a server restart the pane id and cwd are the same, the tab may
         // have moved, and the resumed agent has no name.
         let t = placed_thread(Kind::Worktree);
-        let resumed = Agent { tab_id: "w2:t9".into(), workspace_id: "w2".into(), agent: "claude".into(), ..agent("", "/wt") };
+        let resumed = Agent {
+            tab_id: "w2:t9".into(),
+            workspace_id: "w2".into(),
+            agent: "claude".into(),
+            ..agent("", "/wt")
+        };
         assert!(agent_matches(&t, &resumed));
         assert!(needs_rename(&t, &resumed));
         assert!(live_state(&t, &[resumed], &[], now()).pane_exists);
@@ -1326,7 +1762,10 @@ mod tests {
 
     #[test]
     fn adopted_threads_match_without_the_name() {
-        let t = Thread { agent_name: String::new(), ..placed_thread(Kind::Adopted) };
+        let t = Thread {
+            agent_name: String::new(),
+            ..placed_thread(Kind::Adopted)
+        };
         assert!(agent_matches(&t, &agent("whatever", "/wt")));
         assert!(!agent_matches(&t, &agent("whatever", "/elsewhere")));
     }
@@ -1348,13 +1787,32 @@ mod tests {
         for bad in ["", "t-1", "t-00a1", "../t-0001", "x-0001"] {
             assert!(validate_id(bad).is_err(), "{bad}");
         }
-        assert_eq!(branch_name("demo", "t-0001", "Fix the $(login) bug!"), "hp/demo/t-0001-fix-the-login-bug");
+        assert_eq!(
+            branch_name("demo", "t-0001", "Fix the $(login) bug!"),
+            "hp/demo/t-0001-fix-the-login-bug"
+        );
         assert_eq!(branch_name("demo", "t-0002", "???"), "hp/demo/t-0002");
-        assert_eq!(thread_dir("/wt/", "demo", "t-0001"), "/wt/.herdr-project/demo-t-0001");
-        let remote = Thread { machine: "box".into(), thread_dir: thread_dir("//srv/repo/", "demo", "t-0001"), ..Thread::default() };
-        assert_eq!(remote.report_path(), "//srv/repo/.herdr-project/demo-t-0001/report.md");
-        assert_eq!(remote.library_path(), "//srv/repo/.herdr-project/demo-t-0001/library");
-        assert_eq!(launch_prompt("demo", "t-0001"), "Read .herdr-project/demo-t-0001/brief.md and do what it says.");
+        assert_eq!(
+            thread_dir("/wt/", "demo", "t-0001"),
+            "/wt/.herdr-project/demo-t-0001"
+        );
+        let remote = Thread {
+            machine: "box".into(),
+            thread_dir: thread_dir("//srv/repo/", "demo", "t-0001"),
+            ..Thread::default()
+        };
+        assert_eq!(
+            remote.report_path(),
+            "//srv/repo/.herdr-project/demo-t-0001/report.md"
+        );
+        assert_eq!(
+            remote.library_path(),
+            "//srv/repo/.herdr-project/demo-t-0001/library"
+        );
+        assert_eq!(
+            launch_prompt("demo", "t-0001"),
+            "Read .herdr-project/demo-t-0001/brief.md and do what it says."
+        );
     }
 
     #[test]
@@ -1383,8 +1841,15 @@ mod tests {
         update(&project, &t.id, |t| t.pane_id = "w1:p2".into()).unwrap();
         update(&project, &t.id, |t| t.prompt_pending = true).unwrap();
         let t = load(&project, &t.id).unwrap();
-        assert_eq!((t.title.as_str(), t.pane_id.as_str(), t.prompt_pending), ("Hello", "w1:p2", true));
-        let leftovers = std::fs::read_dir(project.dir().join("threads")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).count();
+        assert_eq!(
+            (t.title.as_str(), t.pane_id.as_str(), t.prompt_pending),
+            ("Hello", "w1:p2", true)
+        );
+        let leftovers = std::fs::read_dir(project.dir().join("threads"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
         assert_eq!(leftovers, 0);
     }
 
@@ -1396,8 +1861,14 @@ mod tests {
             ("c.md".to_string(), "gamma fact".to_string()),
         ];
         let repos = vec![
-            project::Repo { path: "/srv/app".into(), machine: Some("box".into()) },
-            project::Repo { path: "/home/me/lib".into(), machine: None },
+            project::Repo {
+                path: "/srv/app".into(),
+                machine: Some("box".into()),
+            },
+            project::Repo {
+                path: "/home/me/lib".into(),
+                machine: None,
+            },
         ];
         let input = BriefInput {
             project_name: "Demo",
@@ -1416,7 +1887,11 @@ mod tests {
             report_prefix: "/bin/hp --root /r",
         };
         let brief = compose_brief(&input);
-        let pos = |needle: &str| brief.find(needle).unwrap_or_else(|| panic!("missing {needle}"));
+        let pos = |needle: &str| {
+            brief
+                .find(needle)
+                .unwrap_or_else(|| panic!("missing {needle}"))
+        };
         // The header comes first: name, goal, repos with machines, uploads, library, report.
         assert!(brief.starts_with("# Project\n\n- Project: Demo (`demo`)\n- Goal: Ship it\n"));
         assert!(pos("/srv/app on machine `box`") < pos("/home/me/lib (local)"));
@@ -1429,14 +1904,37 @@ mod tests {
         assert!(pos("/bin/hp --root /r report --percent 25") < pos("Do the thing."));
         assert!(pos("Do the thing.") < pos("# Paths"));
         assert!(brief.contains("gamma fact"));
-        assert!(brief.contains("Not inlined because project memory is over 32000 characters: memory/b.md."));
+        assert!(
+            brief.contains(
+                "Not inlined because project memory is over 32000 characters: memory/b.md."
+            )
+        );
         assert!(!brief.contains(&"x".repeat(100)));
         // No operational settings reach a thread.
-        for word in ["max_parallel_threads", "auto_resolve_days", "nudge", "coordinator_agent", "thread_agent"] {
+        for word in [
+            "max_parallel_threads",
+            "auto_resolve_days",
+            "nudge",
+            "coordinator_agent",
+            "thread_agent",
+        ] {
             assert!(!brief.contains(word), "{word}");
         }
 
-        let fresh = compose_brief(&BriefInput { goal: "", repos: &[], remote: true, instructions: "", memory_index: "", memory_files: &[], task: "t", restart: false, report_path: "r", library_path: "l", report_prefix: "", ..input });
+        let fresh = compose_brief(&BriefInput {
+            goal: "",
+            repos: &[],
+            remote: true,
+            instructions: "",
+            memory_index: "",
+            memory_files: &[],
+            task: "t",
+            restart: false,
+            report_path: "r",
+            library_path: "l",
+            report_prefix: "",
+            ..input
+        });
         assert!(!fresh.contains("previous attempt"));
         assert!(fresh.contains("- Goal: (none set)\n- Repos: (none)\n"));
         assert!(fresh.contains("on the home machine; not copied"));
@@ -1445,7 +1943,10 @@ mod tests {
     #[test]
     fn next_lines_come_from_the_next_section_only() {
         let report = "PR: https://github.com/o/r/pull/1\n## Report\n- not this\n## Next\n- Merge the PR\n* Fix CI\n3. Confirm assumption X\n\n## Remember\n- nor this\n";
-        assert_eq!(next_lines(report), ["Merge the PR", "Fix CI", "Confirm assumption X"]);
+        assert_eq!(
+            next_lines(report),
+            ["Merge the PR", "Fix CI", "Confirm assumption X"]
+        );
         assert!(next_lines("## Report\nnothing\n").is_empty());
         assert!(next_lines("## Next\n").is_empty());
     }
@@ -1459,19 +1960,36 @@ mod tests {
         append_follow_up(&project, &t.id, "Also do Y.\n").unwrap();
         append_follow_up(&project, &t.id, "And Z.").unwrap();
         let text = std::fs::read_to_string(task_path(&project, &t.id)).unwrap();
-        assert!(text.starts_with("The task.\n\n## Follow-ups\n\n### 20"), "{text}");
+        assert!(
+            text.starts_with("The task.\n\n## Follow-ups\n\n### 20"),
+            "{text}"
+        );
         assert_eq!(text.matches("## Follow-ups").count(), 1);
         assert_eq!(text.matches("\n### ").count(), 2);
         assert!(text.ends_with("And Z.\n"));
 
         // The coordinator's extra Next lines come after the report's.
-        std::fs::write(home_report_path(&project, &t.id), "## Next\n- From the report\n").unwrap();
-        std::fs::write(extra_next_path(&project, &t.id), "- Added by the coordinator\n").unwrap();
-        assert_eq!(all_next(&project, &t.id), ["From the report", "Added by the coordinator"]);
+        std::fs::write(
+            home_report_path(&project, &t.id),
+            "## Next\n- From the report\n",
+        )
+        .unwrap();
+        std::fs::write(
+            extra_next_path(&project, &t.id),
+            "- Added by the coordinator\n",
+        )
+        .unwrap();
+        assert_eq!(
+            all_next(&project, &t.id),
+            ["From the report", "Added by the coordinator"]
+        );
     }
 
     fn local_thread(project: &Project, dir: &Path) -> Thread {
-        let t = allocate(project, |t| t.thread_dir = dir.to_string_lossy().into_owned()).unwrap();
+        let t = allocate(project, |t| {
+            t.thread_dir = dir.to_string_lossy().into_owned()
+        })
+        .unwrap();
         std::fs::create_dir_all(dir.join("library")).unwrap();
         t
     }
@@ -1486,20 +2004,47 @@ mod tests {
         std::fs::write(dir.join("report.md"), "## Report\nok\n").unwrap();
         std::fs::write(dir.join("library/out.txt"), "data").unwrap();
         std::fs::create_dir(dir.join("library/it's a [folder]")).unwrap();
-        std::fs::write(dir.join("library/it's a [folder]/$(data); file.txt"), "nested data").unwrap();
+        std::fs::write(
+            dir.join("library/it's a [folder]/$(data); file.txt"),
+            "nested data",
+        )
+        .unwrap();
 
         let copied = copy_home_local(&project, &t, true);
         assert_eq!(copied.outcome, CopyOutcome::Complete);
-        assert_eq!(copied.report_hash.as_deref(), Some(sha256_hex(b"## Report\nok\n").as_str()));
-        assert_eq!(std::fs::read_to_string(home_report_path(&project, &t.id)).unwrap(), "## Report\nok\n");
-        assert_eq!(std::fs::read_to_string(project.dir().join("library/t-0001/out.txt")).unwrap(), "data");
-        assert_eq!(std::fs::read_to_string(project.dir().join("library/t-0001/it's a [folder]/$(data); file.txt")).unwrap(), "nested data");
+        assert_eq!(
+            copied.report_hash.as_deref(),
+            Some(sha256_hex(b"## Report\nok\n").as_str())
+        );
+        assert_eq!(
+            std::fs::read_to_string(home_report_path(&project, &t.id)).unwrap(),
+            "## Report\nok\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.dir().join("library/t-0001/out.txt")).unwrap(),
+            "data"
+        );
+        assert_eq!(
+            std::fs::read_to_string(
+                project
+                    .dir()
+                    .join("library/t-0001/it's a [folder]/$(data); file.txt")
+            )
+            .unwrap(),
+            "nested data"
+        );
         std::fs::write(dir.join("library/out.txt"), "updated").unwrap();
         std::fs::write(dir.join("report.md"), "## Report\nupdated\n").unwrap();
         let copied = copy_home_local(&project, &t, true);
         assert_eq!(copied.outcome, CopyOutcome::Complete);
-        assert_eq!(std::fs::read_to_string(home_report_path(&project, &t.id)).unwrap(), "## Report\nupdated\n");
-        assert_eq!(std::fs::read_to_string(project.dir().join("library/t-0001/out.txt")).unwrap(), "updated");
+        assert_eq!(
+            std::fs::read_to_string(home_report_path(&project, &t.id)).unwrap(),
+            "## Report\nupdated\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.dir().join("library/t-0001/out.txt")).unwrap(),
+            "updated"
+        );
 
         #[cfg(unix)]
         {
@@ -1520,7 +2065,10 @@ mod tests {
         let dir = work.path().join(".herdr-project/demo-t-0001");
         let t = local_thread(&project, &dir);
         std::fs::write(dir.join("report.md"), "previous report").unwrap();
-        assert_eq!(copy_home_local(&project, &t, false).outcome, CopyOutcome::Complete);
+        assert_eq!(
+            copy_home_local(&project, &t, false).outcome,
+            CopyOutcome::Complete
+        );
         let outside = work.path().join("private.txt");
         std::fs::write(&outside, "private outside data").unwrap();
         std::fs::remove_file(dir.join("report.md")).unwrap();
@@ -1530,12 +2078,20 @@ mod tests {
 
         assert!(local_report_hash(&t).is_none());
         let copied = copy_home_local(&project, &t, true);
-        assert!(matches!(&copied.outcome, CopyOutcome::Partial(notes) if notes.len() == 2 && notes.iter().all(|note| note.contains("singly linked"))));
+        assert!(
+            matches!(&copied.outcome, CopyOutcome::Partial(notes) if notes.len() == 2 && notes.iter().all(|note| note.contains("singly linked")))
+        );
         assert!(copied.report_hash.is_none());
-        assert_eq!(std::fs::read_to_string(home_report_path(&project, &t.id)).unwrap(), "previous report");
+        assert_eq!(
+            std::fs::read_to_string(home_report_path(&project, &t.id)).unwrap(),
+            "previous report"
+        );
         let target = project.dir().join("library").join(&t.id);
         assert!(!target.join("private.txt").exists());
-        assert_eq!(std::fs::read_to_string(target.join("safe.txt")).unwrap(), "safe deliverable");
+        assert_eq!(
+            std::fs::read_to_string(target.join("safe.txt")).unwrap(),
+            "safe deliverable"
+        );
     }
 
     #[test]
@@ -1546,7 +2102,10 @@ mod tests {
         let dir = work.path().join(".herdr-project/demo-t-0001");
         let t = local_thread(&project, &dir);
         std::fs::write(dir.join("report.md"), "retained report").unwrap();
-        assert_eq!(copy_home_local(&project, &t, false).outcome, CopyOutcome::Complete);
+        assert_eq!(
+            copy_home_local(&project, &t, false).outcome,
+            CopyOutcome::Complete
+        );
         let source = dir.join("library");
         for name in ["one.bin", "two.bin"] {
             std::fs::write(source.join(name), "new").unwrap();
@@ -1556,20 +2115,44 @@ mod tests {
         // Real source mutation after the exact preflight production uses.
         let grown_size = 30 * 1024 * 1024;
         for name in ["one.bin", "two.bin"] {
-            std::fs::OpenOptions::new().write(true).open(source.join(name)).unwrap().set_len(grown_size).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(source.join(name))
+                .unwrap()
+                .set_len(grown_size)
+                .unwrap();
         }
         let target = project.dir().join("library").join(&t.id);
         make_copy_dir(&target).unwrap();
-        let mut budget = CopyBudget { remaining: LIBRARY_CAP_KB * 1024, deadline };
+        let mut budget = CopyBudget {
+            remaining: LIBRARY_CAP_KB * 1024,
+            deadline,
+        };
         let mut buffer = [0_u8; 8192];
         let mut notes = Vec::new();
-        assert!(!copy_library_tree(&source, &target, &mut budget, &mut buffer, &mut notes).unwrap());
+        assert!(
+            !copy_library_tree(&source, &target, &mut budget, &mut buffer, &mut notes).unwrap()
+        );
         assert_eq!(budget.remaining, 0);
-        assert!(notes.iter().any(|note| note.contains("grew beyond the 50 MB cap")));
-        let delivered: Vec<_> = std::fs::read_dir(&target).unwrap().map(|entry| entry.unwrap().path()).collect();
-        assert_eq!(delivered.len(), 1, "an incomplete staging file was published or retained");
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("grew beyond the 50 MB cap"))
+        );
+        let delivered: Vec<_> = std::fs::read_dir(&target)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(
+            delivered.len(),
+            1,
+            "an incomplete staging file was published or retained"
+        );
         assert_eq!(std::fs::metadata(&delivered[0]).unwrap().len(), grown_size);
-        assert_eq!(std::fs::read_to_string(home_report_path(&project, &t.id)).unwrap(), "retained report");
+        assert_eq!(
+            std::fs::read_to_string(home_report_path(&project, &t.id)).unwrap(),
+            "retained report"
+        );
     }
 
     #[test]
@@ -1580,9 +2163,13 @@ mod tests {
         std::fs::create_dir(&source).unwrap();
         std::fs::create_dir(&target).unwrap();
         std::fs::write(source.join("data.txt"), "data").unwrap();
-        let mut budget = CopyBudget { remaining: LIBRARY_CAP_KB * 1024, deadline: Instant::now() - Duration::from_secs(1) };
+        let mut budget = CopyBudget {
+            remaining: LIBRARY_CAP_KB * 1024,
+            deadline: Instant::now() - Duration::from_secs(1),
+        };
         let mut buffer = [0_u8; 8192];
-        let error = copy_library_tree(&source, &target, &mut budget, &mut buffer, &mut Vec::new()).unwrap_err();
+        let error = copy_library_tree(&source, &target, &mut budget, &mut buffer, &mut Vec::new())
+            .unwrap_err();
         assert!(error.to_string().contains("60 second timeout"));
         assert!(std::fs::read_dir(target).unwrap().next().is_none());
     }
@@ -1597,22 +2184,37 @@ mod tests {
         let t = local_thread(&project, &dir);
         let artifact = dir.join("library/result.txt");
         std::fs::write(&artifact, "readonly artifact").unwrap();
-        let mut permissions = std::fs::metadata(&artifact).unwrap().permissions();
+        let original_permissions = std::fs::metadata(&artifact).unwrap().permissions();
+        let mut permissions = original_permissions.clone();
         permissions.set_readonly(true);
         std::fs::set_permissions(&artifact, permissions).unwrap();
         std::fs::write(dir.join("report.md"), "first report").unwrap();
-        assert_eq!(copy_home_local(&project, &t, true).outcome, CopyOutcome::Complete);
+        assert_eq!(
+            copy_home_local(&project, &t, true).outcome,
+            CopyOutcome::Complete
+        );
         let target = project.dir().join("library").join(&t.id).join("result.txt");
         assert!(!std::fs::metadata(&target).unwrap().permissions().readonly());
 
         std::fs::write(dir.join("report.md"), "updated report").unwrap();
-        assert_eq!(copy_home_local(&project, &t, true).outcome, CopyOutcome::Complete);
-        assert_eq!(std::fs::read_to_string(home_report_path(&project, &t.id)).unwrap(), "updated report");
-        assert_eq!(std::fs::read_to_string(target).unwrap(), "readonly artifact");
-        let mut permissions = std::fs::metadata(&artifact).unwrap().permissions();
-        assert!(permissions.readonly(), "copy changed the source's permissions");
-        permissions.set_readonly(false);
-        std::fs::set_permissions(artifact, permissions).unwrap();
+        assert_eq!(
+            copy_home_local(&project, &t, true).outcome,
+            CopyOutcome::Complete
+        );
+        assert_eq!(
+            std::fs::read_to_string(home_report_path(&project, &t.id)).unwrap(),
+            "updated report"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target).unwrap(),
+            "readonly artifact"
+        );
+        let permissions = std::fs::metadata(&artifact).unwrap().permissions();
+        assert!(
+            permissions.readonly(),
+            "copy changed the source's permissions"
+        );
+        std::fs::set_permissions(artifact, original_permissions).unwrap();
     }
 
     #[cfg(windows)]
@@ -1628,25 +2230,53 @@ mod tests {
         let t = allocate(&project, |t| {
             t.cwd = cwd_text.to_string();
             t.thread_dir = thread_dir(&cwd_text, &project.slug, &t.id);
-        }).unwrap();
+        })
+        .unwrap();
         std::fs::create_dir_all(t.library_path()).unwrap();
         std::fs::write(t.report_path(), "## Report\nverbatim result\n").unwrap();
         let library = PathBuf::from(t.library_path());
         std::fs::create_dir(library.join("nested")).unwrap();
-        std::fs::write(library.join("nested").join("it's a [result].txt"), "library result").unwrap();
+        std::fs::write(
+            library.join("nested").join("it's a [result].txt"),
+            "library result",
+        )
+        .unwrap();
 
         let copied = copy_home_local(&project, &t, true);
         assert_eq!(copied.outcome, CopyOutcome::Complete);
-        assert_eq!(copied.report_hash, Some(sha256_hex(b"## Report\nverbatim result\n")));
+        assert_eq!(
+            copied.report_hash,
+            Some(sha256_hex(b"## Report\nverbatim result\n"))
+        );
         let home_report = home_report_path(&project, &t.id);
-        let home_library = project.dir().join("library").join(&t.id).join("nested").join("it's a [result].txt");
-        assert_eq!(std::fs::read_to_string(&home_report).unwrap(), "## Report\nverbatim result\n");
-        assert_eq!(std::fs::read_to_string(&home_library).unwrap(), "library result");
+        let home_library = project
+            .dir()
+            .join("library")
+            .join(&t.id)
+            .join("nested")
+            .join("it's a [result].txt");
+        assert_eq!(
+            std::fs::read_to_string(&home_report).unwrap(),
+            "## Report\nverbatim result\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&home_library).unwrap(),
+            "library result"
+        );
 
         std::fs::remove_dir_all(&t.thread_dir).unwrap();
-        assert_eq!(copy_home_local(&project, &t, true).outcome, CopyOutcome::Complete);
-        assert_eq!(std::fs::read_to_string(home_report).unwrap(), "## Report\nverbatim result\n");
-        assert_eq!(std::fs::read_to_string(home_library).unwrap(), "library result");
+        assert_eq!(
+            copy_home_local(&project, &t, true).outcome,
+            CopyOutcome::Complete
+        );
+        assert_eq!(
+            std::fs::read_to_string(home_report).unwrap(),
+            "## Report\nverbatim result\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(home_library).unwrap(),
+            "library result"
+        );
         std::fs::remove_dir_all(cwd).unwrap();
     }
 
@@ -1675,7 +2305,10 @@ mod tests {
         std::fs::write(real.join("report.md"), "secret").unwrap();
         let linked = work.path().join("linked");
         std::os::unix::fs::symlink(&real, &linked).unwrap();
-        let t2 = allocate(&project, |t| t.thread_dir = linked.to_string_lossy().into_owned()).unwrap();
+        let t2 = allocate(&project, |t| {
+            t.thread_dir = linked.to_string_lossy().into_owned()
+        })
+        .unwrap();
         let copied = copy_home_local(&project, &t2, true);
         assert!(matches!(copied.outcome, CopyOutcome::Partial(_)));
         assert!(!home_report_path(&project, &t2.id).exists());
@@ -1689,14 +2322,32 @@ mod tests {
         let dir = work.path().join(".herdr-project/demo-t-0001");
         let t = local_thread(&project, &dir);
         std::fs::write(dir.join("report.md"), "r").unwrap();
-        std::fs::File::create(dir.join("library/large.bin")).unwrap().set_len(LIBRARY_CAP_KB * 1024 + 1).unwrap();
+        std::fs::File::create(dir.join("library/large.bin"))
+            .unwrap()
+            .set_len(LIBRARY_CAP_KB * 1024 + 1)
+            .unwrap();
         let copied = copy_home_local(&project, &t, true);
-        assert!(matches!(&copied.outcome, CopyOutcome::Partial(notes) if notes[0].contains("over the 50 MB cap")));
+        assert!(
+            matches!(&copied.outcome, CopyOutcome::Partial(notes) if notes[0].contains("over the 50 MB cap"))
+        );
         assert!(home_report_path(&project, &t.id).is_file());
         assert!(!project.dir().join("library").join(&t.id).exists());
-        std::fs::OpenOptions::new().write(true).open(dir.join("library/large.bin")).unwrap().set_len(LIBRARY_CAP_KB * 1024).unwrap();
-        assert_eq!(copy_home_local(&project, &t, true).outcome, CopyOutcome::Complete);
-        assert_eq!(std::fs::metadata(project.dir().join("library").join(&t.id).join("large.bin")).unwrap().len(), LIBRARY_CAP_KB * 1024);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join("library/large.bin"))
+            .unwrap()
+            .set_len(LIBRARY_CAP_KB * 1024)
+            .unwrap();
+        assert_eq!(
+            copy_home_local(&project, &t, true).outcome,
+            CopyOutcome::Complete
+        );
+        assert_eq!(
+            std::fs::metadata(project.dir().join("library").join(&t.id).join("large.bin"))
+                .unwrap()
+                .len(),
+            LIBRARY_CAP_KB * 1024
+        );
     }
 
     #[test]
@@ -1712,7 +2363,10 @@ mod tests {
         let copied = copy_home_local(&project, &t, true);
         assert!(matches!(copied.outcome, CopyOutcome::Failed(_)));
         assert_eq!(copied.report_hash, Some(sha256_hex(b"retained")));
-        assert_eq!(std::fs::read_to_string(home_report_path(&project, &t.id)).unwrap(), "retained");
+        assert_eq!(
+            std::fs::read_to_string(home_report_path(&project, &t.id)).unwrap(),
+            "retained"
+        );
     }
 
     #[test]
@@ -1728,9 +2382,15 @@ mod tests {
         std::fs::create_dir(&target).unwrap();
         std::fs::hard_link(&outside, target.join("data.txt")).unwrap();
         std::fs::write(dir.join("library/data.txt"), "deliverable").unwrap();
-        assert_eq!(copy_home_local(&project, &t, true).outcome, CopyOutcome::Complete);
+        assert_eq!(
+            copy_home_local(&project, &t, true).outcome,
+            CopyOutcome::Complete
+        );
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "secret");
-        assert_eq!(std::fs::read_to_string(target.join("data.txt")).unwrap(), "deliverable");
+        assert_eq!(
+            std::fs::read_to_string(target.join("data.txt")).unwrap(),
+            "deliverable"
+        );
     }
 
     #[cfg(windows)]
@@ -1748,8 +2408,30 @@ mod tests {
         std::fs::create_dir(&outside).unwrap();
         std::fs::write(outside.join("secret.txt"), "secret").unwrap();
         let link_dir = |target: &Path, link: &Path| {
-            let script = local_command("New-Item", &["-ItemType", "Junction", "-Path", &link.to_string_lossy(), "-Target", &target.to_string_lossy(), "-ErrorAction", "Stop"]);
-            let out = RealRunner.run(&Cmd::new("pwsh.exe", std::time::Duration::from_secs(10)).args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &script])).unwrap();
+            let script = local_command(
+                "New-Item",
+                &[
+                    "-ItemType",
+                    "Junction",
+                    "-Path",
+                    &link.to_string_lossy(),
+                    "-Target",
+                    &target.to_string_lossy(),
+                    "-ErrorAction",
+                    "Stop",
+                ],
+            );
+            let out = RealRunner
+                .run(
+                    &Cmd::new("pwsh.exe", std::time::Duration::from_secs(10)).args([
+                        "-NoLogo",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        &script,
+                    ]),
+                )
+                .unwrap();
             assert!(out.success(), "{}", out.error_text());
         };
         let source_link = dir.join("library/link");
@@ -1764,8 +2446,14 @@ mod tests {
         link_dir(&outside, &target.join("link"));
         let copied = copy_home_local(&project, &t, true);
         assert!(matches!(copied.outcome, CopyOutcome::Failed(_)));
-        assert_eq!(std::fs::read_to_string(outside.join("secret.txt")).unwrap(), "secret");
-        assert_eq!(std::fs::read_to_string(home_report_path(&project, &t.id)).unwrap(), "report retained");
+        assert_eq!(
+            std::fs::read_to_string(outside.join("secret.txt")).unwrap(),
+            "secret"
+        );
+        assert_eq!(
+            std::fs::read_to_string(home_report_path(&project, &t.id)).unwrap(),
+            "report retained"
+        );
         std::fs::remove_dir(target.join("link")).unwrap();
     }
 }

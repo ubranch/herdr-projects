@@ -145,7 +145,10 @@ pub const PROMPT_WAIT: Duration = Duration::from_secs(8);
 
 /// herdr refused the prompt before typing anything.
 pub fn refused_before_typing(error: &HerdrError) -> bool {
-    matches!(error.code.as_str(), "agent_blocked" | "pane_not_found" | "unreachable")
+    matches!(
+        error.code.as_str(),
+        "agent_blocked" | "pane_not_found" | "unreachable"
+    )
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
@@ -237,7 +240,10 @@ impl Agent {
     }
 
     pub fn session_id(&self) -> &str {
-        self.agent_session.as_ref().map(|s| s.value.as_str()).unwrap_or("")
+        self.agent_session
+            .as_ref()
+            .map(|s| s.value.as_str())
+            .unwrap_or("")
     }
 }
 
@@ -279,7 +285,10 @@ impl<'a> Herdr<'a> {
                 });
             }
             if out.success() {
-                return Ok(reply.get("result").cloned().unwrap_or(serde_json::Value::Null));
+                return Ok(reply
+                    .get("result")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null));
             }
         } else if out.success() && out.stdout.trim().is_empty() {
             // Metadata writes acknowledge success with the exit status alone.
@@ -326,7 +335,9 @@ impl<'a> Herdr<'a> {
             return false;
         };
         info["foreground_process_group_id"].as_u64() == Some(shell)
-            && info["foreground_processes"].as_array().is_some_and(|all| all.iter().all(|p| p["pid"].as_u64() == Some(shell)))
+            && info["foreground_processes"]
+                .as_array()
+                .is_some_and(|all| all.iter().all(|p| p["pid"].as_u64() == Some(shell)))
     }
 
     fn created(result: &serde_json::Value) -> Result<Created, HerdrError> {
@@ -348,21 +359,50 @@ impl<'a> Herdr<'a> {
         }
     }
 
-    pub fn workspace_create(&self, cwd: &Path, label: &str, focus: bool) -> Result<Created, HerdrError> {
+    pub fn workspace_create(
+        &self,
+        cwd: &Path,
+        label: &str,
+        focus: bool,
+    ) -> Result<Created, HerdrError> {
         let cwd = cwd.to_string_lossy();
         let focus = if focus { "--focus" } else { "--no-focus" };
         let result = self.call(
-            &["workspace", "create", "--cwd", &cwd, "--label", label, focus],
+            &[
+                "workspace",
+                "create",
+                "--cwd",
+                &cwd,
+                "--label",
+                label,
+                focus,
+            ],
             CALL_TIMEOUT,
         )?;
         Self::created(&result)
     }
 
-    pub fn tab_create(&self, workspace: &str, cwd: &Path, label: &str, focus: bool) -> Result<Created, HerdrError> {
+    pub fn tab_create(
+        &self,
+        workspace: &str,
+        cwd: &Path,
+        label: &str,
+        focus: bool,
+    ) -> Result<Created, HerdrError> {
         let cwd = cwd.to_string_lossy();
         let focus = if focus { "--focus" } else { "--no-focus" };
         let result = self.call(
-            &["tab", "create", "--workspace", workspace, "--cwd", &cwd, "--label", label, focus],
+            &[
+                "tab",
+                "create",
+                "--workspace",
+                workspace,
+                "--cwd",
+                &cwd,
+                "--label",
+                label,
+                focus,
+            ],
             CALL_TIMEOUT,
         )?;
         Self::created(&result)
@@ -370,9 +410,27 @@ impl<'a> Herdr<'a> {
 
     /// Creates a worktree-backed workspace. Returns the ids and the checkout
     /// path as herdr reports it (on the machine the call ran on).
-    pub fn worktree_create(&self, repo: &str, branch: &str, base: &str, label: &str) -> Result<(Created, String, String), HerdrError> {
+    pub fn worktree_create(
+        &self,
+        repo: &str,
+        branch: &str,
+        base: &str,
+        label: &str,
+    ) -> Result<(Created, String, String), HerdrError> {
         let result = self.call(
-            &["worktree", "create", "--cwd", repo, "--branch", branch, "--base", base, "--label", label, "--no-focus"],
+            &[
+                "worktree",
+                "create",
+                "--cwd",
+                repo,
+                "--branch",
+                branch,
+                "--base",
+                base,
+                "--label",
+                label,
+                "--no-focus",
+            ],
             Duration::from_secs(20),
         )?;
         Self::worktree_reply(&result)
@@ -380,9 +438,24 @@ impl<'a> Herdr<'a> {
 
     /// `--cwd <repo>` is required: without it herdr answers `worktree_not_found`
     /// even for a path git lists (checked on 0.9.1).
-    pub fn worktree_open(&self, repo: &str, path: &str, label: &str) -> Result<(Created, String, String), HerdrError> {
+    pub fn worktree_open(
+        &self,
+        repo: &str,
+        path: &str,
+        label: &str,
+    ) -> Result<(Created, String, String), HerdrError> {
         let result = self.call(
-            &["worktree", "open", "--cwd", repo, "--path", path, "--label", label, "--no-focus"],
+            &[
+                "worktree",
+                "open",
+                "--cwd",
+                repo,
+                "--path",
+                path,
+                "--label",
+                label,
+                "--no-focus",
+            ],
             Duration::from_secs(20),
         )?;
         Self::worktree_reply(&result)
@@ -396,9 +469,15 @@ impl<'a> Herdr<'a> {
             .or_else(|| result["workspace"]["worktree"]["checkout_path"].as_str())
             .unwrap_or_default()
             .to_string();
-        let cwd = result["root_pane"]["cwd"].as_str().unwrap_or(&path).to_string();
+        let cwd = result["root_pane"]["cwd"]
+            .as_str()
+            .unwrap_or(&path)
+            .to_string();
         if path.is_empty() {
-            return Err(HerdrError { code: "failed".into(), message: "herdr's worktree reply has no path".into() });
+            return Err(HerdrError {
+                code: "failed".into(),
+                message: "herdr's worktree reply has no path".into(),
+            });
         }
         Ok((created, path, cwd))
     }
@@ -406,30 +485,57 @@ impl<'a> Herdr<'a> {
     /// Never passes `--force`: herdr refuses a dirty worktree and that refusal
     /// is reported unchanged.
     pub fn worktree_remove(&self, workspace: &str) -> Result<(), HerdrError> {
-        self.call(&["worktree", "remove", "--workspace", workspace], Duration::from_secs(20)).map(|_| ())
+        self.call(
+            &["worktree", "remove", "--workspace", workspace],
+            Duration::from_secs(20),
+        )
+        .map(|_| ())
     }
 
     /// A workspace's label, as the sidebar shows it.
     pub fn workspace_label(&self, workspace: &str) -> Result<String, HerdrError> {
         let result = self.call(&["workspace", "get", workspace], CALL_TIMEOUT)?;
-        Ok(result["workspace"]["label"].as_str().unwrap_or_default().to_string())
+        Ok(result["workspace"]["label"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string())
     }
 
     pub fn workspace_rename(&self, workspace: &str, label: &str) -> Result<(), HerdrError> {
-        self.call(&["workspace", "rename", workspace, label], CALL_TIMEOUT).map(|_| ())
+        self.call(&["workspace", "rename", workspace, label], CALL_TIMEOUT)
+            .map(|_| ())
     }
 
     /// The working directory herdr reports for a new tab's pane.
     pub fn pane_cwd(&self, pane: &str) -> Result<String, HerdrError> {
         let result = self.call(&["pane", "get", pane], CALL_TIMEOUT)?;
-        Ok(result["pane"]["cwd"].as_str().unwrap_or_default().to_string())
+        Ok(result["pane"]["cwd"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string())
     }
 
     /// Starts an agent in a pane that is at a shell prompt. Success means herdr
     /// detected the agent and it is ready for input.
-    pub fn agent_start(&self, name: &str, kind: &str, pane: &str, agent_args: &[String]) -> Result<Agent, HerdrError> {
+    pub fn agent_start(
+        &self,
+        name: &str,
+        kind: &str,
+        pane: &str,
+        agent_args: &[String],
+    ) -> Result<Agent, HerdrError> {
         let timeout_ms = AGENT_START_TIMEOUT.as_millis().to_string();
-        let mut args = vec!["agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", &timeout_ms];
+        let mut args = vec![
+            "agent",
+            "start",
+            name,
+            "--kind",
+            kind,
+            "--pane",
+            pane,
+            "--timeout",
+            &timeout_ms,
+        ];
         if !agent_args.is_empty() {
             args.push("--");
             args.extend(agent_args.iter().map(String::as_str));
@@ -446,7 +552,8 @@ impl<'a> Herdr<'a> {
     /// after them, and has no `--` separator here; text in the second
     /// position is accepted even when it starts with a dash (checked on 0.9.1).
     pub fn agent_prompt(&self, target: &str, text: &str) -> Result<(), HerdrError> {
-        self.call(&["agent", "prompt", target, text], CALL_TIMEOUT).map(|_| ())
+        self.call(&["agent", "prompt", target, text], CALL_TIMEOUT)
+            .map(|_| ())
     }
 
     /// Submits a prompt and waits until the agent is seen `working` (or
@@ -456,9 +563,24 @@ impl<'a> Herdr<'a> {
     /// not sit in the input box: callers never type it again blindly.
     pub fn agent_prompt_confirmed(&self, target: &str, text: &str) -> Result<(), HerdrError> {
         let timeout_ms = PROMPT_WAIT.as_millis().to_string();
-        let args = ["agent", "prompt", target, text, "--wait", "--until", "working", "--until", "blocked", "--timeout", &timeout_ms];
+        let args = [
+            "agent",
+            "prompt",
+            target,
+            text,
+            "--wait",
+            "--until",
+            "working",
+            "--until",
+            "blocked",
+            "--timeout",
+            &timeout_ms,
+        ];
         match self.call(&args, PROMPT_WAIT + Duration::from_secs(5))? {
-            serde_json::Value::Null => Err(HerdrError { code: "no_reply".into(), message: "`herdr agent prompt --wait` answered without a result".into() }),
+            serde_json::Value::Null => Err(HerdrError {
+                code: "no_reply".into(),
+                message: "`herdr agent prompt --wait` answered without a result".into(),
+            }),
             _ => Ok(()),
         }
     }
@@ -470,7 +592,12 @@ impl<'a> Herdr<'a> {
         self.agent_read_as(target, lines, "text")
     }
 
-    fn agent_read_as(&self, target: &str, lines: Option<usize>, format: &str) -> Result<String, HerdrError> {
+    fn agent_read_as(
+        &self,
+        target: &str,
+        lines: Option<usize>,
+        format: &str,
+    ) -> Result<String, HerdrError> {
         let lines = lines.map(|n| n.to_string());
         let mut args = vec!["agent", "read", target, "--format", format];
         match &lines {
@@ -478,9 +605,15 @@ impl<'a> Herdr<'a> {
             None => args.extend(["--source", "visible"]),
         }
         let cmd = self.cmd(CALL_TIMEOUT).args(args.iter().copied());
-        let out = self.runner.run(&cmd).map_err(|e| HerdrError { code: "unreachable".into(), message: format!("{e:#}") })?;
+        let out = self.runner.run(&cmd).map_err(|e| HerdrError {
+            code: "unreachable".into(),
+            message: format!("{e:#}"),
+        })?;
         if out.timed_out {
-            return Err(HerdrError { code: "timeout".into(), message: format!("`herdr {}` timed out", args.join(" ")) });
+            return Err(HerdrError {
+                code: "timeout".into(),
+                message: format!("`herdr {}` timed out", args.join(" ")),
+            });
         }
         if out.success() {
             return Ok(out.stdout);
@@ -493,7 +626,10 @@ impl<'a> Herdr<'a> {
                 code: error["code"].as_str().unwrap_or("failed").to_string(),
                 message: error["message"].as_str().unwrap_or("").to_string(),
             },
-            None => HerdrError { code: "failed".into(), message: format!("`herdr {}`: {}", args.join(" "), out.error_text()) },
+            None => HerdrError {
+                code: "failed".into(),
+                message: format!("`herdr {}`: {}", args.join(" "), out.error_text()),
+            },
         })
     }
 
@@ -515,36 +651,54 @@ impl<'a> Herdr<'a> {
     /// Literal text typed into a pane, with no Enter (herdr has no agent-level
     /// form of this in 0.9.1).
     pub fn pane_send_text(&self, pane: &str, text: &str) -> Result<(), HerdrError> {
-        self.call(&["pane", "send-text", pane, text], CALL_TIMEOUT).map(|_| ())
+        self.call(&["pane", "send-text", pane, text], CALL_TIMEOUT)
+            .map(|_| ())
     }
 
     pub fn agent_focus(&self, target: &str) -> Result<(), HerdrError> {
-        self.call(&["agent", "focus", target], CALL_TIMEOUT).map(|_| ())
+        self.call(&["agent", "focus", target], CALL_TIMEOUT)
+            .map(|_| ())
     }
 
     /// Names an already detected agent (after Herdr's native resume leaves a
     /// restored pane unnamed).
     pub fn agent_rename(&self, pane: &str, name: &str) -> Result<(), HerdrError> {
-        self.call(&["agent", "rename", pane, name], CALL_TIMEOUT).map(|_| ())
+        self.call(&["agent", "rename", pane, name], CALL_TIMEOUT)
+            .map(|_| ())
     }
 
     pub fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError> {
-        self.call(&["notification", "show", title, "--body", body], CALL_TIMEOUT).map(|_| ())
+        self.call(
+            &["notification", "show", title, "--body", body],
+            CALL_TIMEOUT,
+        )
+        .map(|_| ())
     }
-
 }
 
 pub const SOURCE: &str = "herdr-projects";
 
 impl<'a> Herdr<'a> {
-    fn request(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, HerdrError> {
-        let line = serde_json::json!({ "id": "herdr-projects", "method": method, "params": params }).to_string();
+    fn request(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, HerdrError> {
+        let line =
+            serde_json::json!({ "id": "herdr-projects", "method": method, "params": params })
+                .to_string();
         let reply = self
             .runner
             .socket_request(&self.socket, &line, CALL_TIMEOUT)
-            .map_err(|e| HerdrError { code: "unreachable".into(), message: format!("{e:#}") })?;
-        let reply: serde_json::Value = serde_json::from_str(reply.trim())
-            .map_err(|e| HerdrError { code: "failed".into(), message: format!("herdr's reply to {method} did not parse: {e}") })?;
+            .map_err(|e| HerdrError {
+                code: "unreachable".into(),
+                message: format!("{e:#}"),
+            })?;
+        let reply: serde_json::Value =
+            serde_json::from_str(reply.trim()).map_err(|e| HerdrError {
+                code: "failed".into(),
+                message: format!("herdr's reply to {method} did not parse: {e}"),
+            })?;
         match reply.get("error") {
             Some(error) => Err(HerdrError {
                 code: error["code"].as_str().unwrap_or("failed").to_string(),
@@ -562,10 +716,17 @@ impl<'a> Herdr<'a> {
 
     /// Moves a Space to `insert_index` (a gap in the list before the move;
     /// socket only in 0.9.1).
-    pub fn workspace_move(&self, workspace_id: &str, insert_index: usize) -> Result<(), HerdrError> {
-        self.request("workspace.move", serde_json::json!({ "workspace_id": workspace_id, "insert_index": insert_index })).map(|_| ())
+    pub fn workspace_move(
+        &self,
+        workspace_id: &str,
+        insert_index: usize,
+    ) -> Result<(), HerdrError> {
+        self.request(
+            "workspace.move",
+            serde_json::json!({ "workspace_id": workspace_id, "insert_index": insert_index }),
+        )
+        .map(|_| ())
     }
-
 }
 
 #[cfg(test)]
@@ -575,7 +736,10 @@ mod tests {
     #[test]
     fn parses_versions() {
         assert_eq!(parse_version("herdr 0.9.0\n"), Some(Version(0, 9, 0)));
-        assert_eq!(parse_version("herdr 0.9.2-preview.3"), Some(Version(0, 9, 2)));
+        assert_eq!(
+            parse_version("herdr 0.9.2-preview.3"),
+            Some(Version(0, 9, 2))
+        );
         assert_eq!(parse_version("0.10.0"), Some(Version(0, 10, 0)));
         assert_eq!(parse_version("herdr"), None);
         assert!(Version(0, 9, 0) < MIN_VERSION);

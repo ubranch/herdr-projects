@@ -26,8 +26,12 @@ impl Env {
 
     fn from_vars(vars: BTreeMap<String, String>) -> Result<Self> {
         #[cfg(windows)]
-        let vars = vars.into_iter().map(|(key, value)| (key.to_ascii_uppercase(), value)).collect::<BTreeMap<_, _>>();
-        let home = ["HOME", "USERPROFILE"].into_iter()
+        let vars = vars
+            .into_iter()
+            .map(|(key, value)| (key.to_ascii_uppercase(), value))
+            .collect::<BTreeMap<_, _>>();
+        let home = ["HOME", "USERPROFILE"]
+            .into_iter()
             .filter_map(|key| vars.get(key).filter(|value| !value.is_empty()))
             .map(PathBuf::from)
             .find(|path| !cfg!(windows) || path.is_absolute());
@@ -55,7 +59,10 @@ impl Env {
 
     /// A variable's value; an empty value counts as unset.
     pub fn var(&self, key: &str) -> Option<&str> {
-        self.vars.get(key).map(String::as_str).filter(|v| !v.is_empty())
+        self.vars
+            .get(key)
+            .map(String::as_str)
+            .filter(|v| !v.is_empty())
     }
 
     /// The fixed user-level config directory, `~/.config/herdr-projects`.
@@ -105,24 +112,37 @@ pub fn canonicalize(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
         use std::path::{Component, Prefix};
         let normal_names = path.components().all(|component| match component {
             Component::Normal(name) => name.to_str().is_some_and(|name| {
-                if name.ends_with(['.', ' ']) || name.contains(['<', '>', ':', '"', '|', '?', '*']) || name.chars().any(|c| c < ' ') {
+                if name.ends_with(['.', ' '])
+                    || name.contains(['<', '>', ':', '"', '|', '?', '*'])
+                    || name.chars().any(|c| c < ' ')
+                {
                     return false;
                 }
                 let stem = name.split('.').next().unwrap_or("");
-                let reserved = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].iter().any(|word| stem.eq_ignore_ascii_case(word));
-                let numbered = stem.get(..3).is_some_and(|prefix| prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
-                    && stem.get(3..).is_some_and(|suffix| matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"));
+                let reserved = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+                    .iter()
+                    .any(|word| stem.eq_ignore_ascii_case(word));
+                let numbered = stem.get(..3).is_some_and(|prefix| {
+                    prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT")
+                }) && stem.get(3..).is_some_and(|suffix| {
+                    matches!(
+                        suffix,
+                        "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                    )
+                });
                 !reserved && !numbered
             }),
             _ => true,
         });
-        if normal_names && let Some(text) = path.to_str() {
-            match path.components().next() {
-                Some(Component::Prefix(prefix)) => match prefix.kind() {
-                    Prefix::VerbatimDisk(_) => return Ok(PathBuf::from(&text[4..])),
-                    Prefix::VerbatimUNC(_, _) => return Ok(PathBuf::from(format!("\\\\{}", &text[8..]))),
-                    _ => {}
-                },
+        if normal_names
+            && let Some(text) = path.to_str()
+            && let Some(Component::Prefix(prefix)) = path.components().next()
+        {
+            match prefix.kind() {
+                Prefix::VerbatimDisk(_) => return Ok(PathBuf::from(&text[4..])),
+                Prefix::VerbatimUNC(_, _) => {
+                    return Ok(PathBuf::from(format!("\\\\{}", &text[8..])));
+                }
                 _ => {}
             }
         }
@@ -139,8 +159,12 @@ pub fn same_dir(left: &Path, right: &Path) -> bool {
     if left == right {
         return true;
     }
-    let Ok(left) = canonicalize(left) else { return false; };
-    let Ok(right) = canonicalize(right) else { return false; };
+    let Ok(left) = canonicalize(left) else {
+        return false;
+    };
+    let Ok(right) = canonicalize(right) else {
+        return false;
+    };
     left == right
 }
 
@@ -155,7 +179,10 @@ pub fn within_dir(path: &Path, dir: &Path) -> bool {
     }
     let canonical_path = canonicalize(path).ok();
     let canonical_dir = canonicalize(dir).ok();
-    canonical_path.as_deref().unwrap_or(path).starts_with(canonical_dir.as_deref().unwrap_or(dir))
+    canonical_path
+        .as_deref()
+        .unwrap_or(path)
+        .starts_with(canonical_dir.as_deref().unwrap_or(dir))
 }
 
 #[cfg(all(test, windows))]
@@ -248,16 +275,25 @@ pub fn resolve_session(flags: &SessionFlags, env: &Env, runner: &dyn Runner) -> 
     let mut sessions = herdr::session_list(&env.herdr_bin(), runner).unwrap_or_default();
     if let Some(index) = sessions.iter().position(|s| s.default) {
         let found = sessions.swap_remove(index);
-        return Ok(Session { socket: found.socket_path, name: None });
+        return Ok(Session {
+            socket: found.socket_path,
+            name: None,
+        });
     }
     if sessions.len() == 1 {
         let found = sessions.into_iter().next().unwrap();
-        return Ok(Session { socket: found.socket_path, name: Some(found.name) });
+        return Ok(Session {
+            socket: found.socket_path,
+            name: Some(found.name),
+        });
     }
     if !sessions.is_empty() {
         bail!("herdr has multiple sessions but no default; pass --session or --socket");
     }
-    Ok(Session { socket: env.herdr_config_dir().join("herdr.sock"), name: None })
+    Ok(Session {
+        socket: env.herdr_config_dir().join("herdr.sock"),
+        name: None,
+    })
 }
 
 fn session_by_name(name: &str, env: &Env, runner: &dyn Runner) -> Result<Session> {
@@ -267,7 +303,9 @@ fn session_by_name(name: &str, env: &Env, runner: &dyn Runner) -> Result<Session
             socket: found.socket_path,
             name: Some(name.to_string()),
         }),
-        None => bail!("herdr has no session named `{name}`; start it with `herdr --session {name}`"),
+        None => {
+            bail!("herdr has no session named `{name}`; start it with `herdr --session {name}`")
+        }
     }
 }
 
@@ -288,13 +326,13 @@ mod tests {
         std::fs::write(config_dir.join("config.toml"), "root = \"~/from-config\"\n").unwrap();
 
         let from_env = home.path().join("from-env");
-        let env = Env::for_test(home.path(), &[("HERDR_PROJECTS_ROOT", from_env.to_str().unwrap())]);
+        let env = Env::for_test(
+            home.path(),
+            &[("HERDR_PROJECTS_ROOT", from_env.to_str().unwrap())],
+        );
         let flag = home.path().join("from-flag");
         assert_eq!(resolve_root(Some(&flag), &env, &config_dir).unwrap(), flag);
-        assert_eq!(
-            resolve_root(None, &env, &config_dir).unwrap(),
-            from_env
-        );
+        assert_eq!(resolve_root(None, &env, &config_dir).unwrap(), from_env);
 
         let env = Env::for_test(home.path(), &[]);
         assert_eq!(
@@ -318,7 +356,10 @@ mod tests {
     #[test]
     fn empty_variable_counts_as_unset() {
         let home = tempfile::tempdir().unwrap();
-        let env = Env::for_test(home.path(), &[("HERDR_PROJECTS_ROOT", ""), ("HERDR_BIN_PATH", "")]);
+        let env = Env::for_test(
+            home.path(),
+            &[("HERDR_PROJECTS_ROOT", ""), ("HERDR_BIN_PATH", "")],
+        );
         assert_eq!(
             resolve_root(None, &env, &home.path().join("none")).unwrap(),
             home.path().join(".herdr-projects")
@@ -347,7 +388,10 @@ mod tests {
             socket: None,
         };
         let got = resolve_session(&by_name, &env, &runner).unwrap();
-        assert_eq!(got.socket, PathBuf::from("/h/.config/herdr/sessions/hp-dev/herdr.sock"));
+        assert_eq!(
+            got.socket,
+            PathBuf::from("/h/.config/herdr/sessions/hp-dev/herdr.sock")
+        );
         assert_eq!(got.name.as_deref(), Some("hp-dev"));
 
         let by_socket = SessionFlags {
@@ -355,11 +399,23 @@ mod tests {
             socket: Some("/flag.sock".into()),
         };
         let got = resolve_session(&by_socket, &env, &runner).unwrap();
-        assert_eq!(got, Session { socket: std::path::absolute(Path::new("/flag.sock")).unwrap(), name: None });
+        assert_eq!(
+            got,
+            Session {
+                socket: std::path::absolute(Path::new("/flag.sock")).unwrap(),
+                name: None
+            }
+        );
 
         let none = SessionFlags::default();
         let got = resolve_session(&none, &env, &runner).unwrap();
-        assert_eq!(got, Session { socket: "/env.sock".into(), name: None });
+        assert_eq!(
+            got,
+            Session {
+                socket: "/env.sock".into(),
+                name: None
+            }
+        );
 
         let env = Env::for_test(Path::new("/h"), &[("HERDR_SESSION", "hp-dev")]);
         let got = resolve_session(&none, &env, &runner).unwrap();
@@ -367,7 +423,13 @@ mod tests {
 
         let env = Env::for_test(Path::new("/h"), &[]);
         let got = resolve_session(&none, &env, &runner).unwrap();
-        assert_eq!(got, Session { socket: "/h/.config/herdr/herdr.sock".into(), name: None });
+        assert_eq!(
+            got,
+            Session {
+                socket: "/h/.config/herdr/herdr.sock".into(),
+                name: None
+            }
+        );
     }
 
     #[test]
@@ -397,24 +459,61 @@ mod tests {
     fn home_falls_back_to_userprofile_and_runtime_config_follows_host() {
         let home = tempfile::tempdir().unwrap();
         let profile = home.path().join("项目 home");
-        let vars = [("HOME".to_string(), String::new()), ("USERPROFILE".to_string(), profile.to_string_lossy().into_owned())].into_iter().collect();
+        let vars = [
+            ("HOME".to_string(), String::new()),
+            (
+                "USERPROFILE".to_string(),
+                profile.to_string_lossy().into_owned(),
+            ),
+        ]
+        .into_iter()
+        .collect();
         let env = Env::from_vars(vars).unwrap();
         assert_eq!(env.home, profile);
         assert_eq!(env.config_dir(), profile.join(".config/herdr-projects"));
         let xdg = home.path().join("xdg config");
         let appdata = home.path().join("roaming");
         let config = home.path().join("isolated/herdr.toml");
-        let env = Env::for_test(&profile, &[("XDG_CONFIG_HOME", xdg.to_str().unwrap()), ("APPDATA", appdata.to_str().unwrap())]);
+        let env = Env::for_test(
+            &profile,
+            &[
+                ("XDG_CONFIG_HOME", xdg.to_str().unwrap()),
+                ("APPDATA", appdata.to_str().unwrap()),
+            ],
+        );
         assert_eq!(env.herdr_config_dir(), xdg.join("herdr"));
-        let env = Env::for_test(&profile, &[("HERDR_CONFIG_PATH", config.to_str().unwrap()), ("XDG_CONFIG_HOME", xdg.to_str().unwrap())]);
+        let env = Env::for_test(
+            &profile,
+            &[
+                ("HERDR_CONFIG_PATH", config.to_str().unwrap()),
+                ("XDG_CONFIG_HOME", xdg.to_str().unwrap()),
+            ],
+        );
         assert_eq!(env.herdr_config_dir(), xdg.join("herdr"));
         assert_eq!(crate::setup::herdr_config_path(&env), config);
         let runner = FakeRunner::new();
         runner.on("session list --json", ok(r#"{"sessions":[]}"#));
-        assert_eq!(resolve_session(&SessionFlags::default(), &env, &runner).unwrap().socket, xdg.join("herdr/herdr.sock"));
+        assert_eq!(
+            resolve_session(&SessionFlags::default(), &env, &runner)
+                .unwrap()
+                .socket,
+            xdg.join("herdr/herdr.sock")
+        );
         let socket = home.path().join("injected.sock");
-        let env = Env::for_test(&profile, &[("HERDR_CONFIG_PATH", config.to_str().unwrap()), ("XDG_CONFIG_HOME", xdg.to_str().unwrap()), ("HERDR_SOCKET_PATH", socket.to_str().unwrap())]);
-        assert_eq!(resolve_session(&SessionFlags::default(), &env, &runner).unwrap().socket, socket);
+        let env = Env::for_test(
+            &profile,
+            &[
+                ("HERDR_CONFIG_PATH", config.to_str().unwrap()),
+                ("XDG_CONFIG_HOME", xdg.to_str().unwrap()),
+                ("HERDR_SOCKET_PATH", socket.to_str().unwrap()),
+            ],
+        );
+        assert_eq!(
+            resolve_session(&SessionFlags::default(), &env, &runner)
+                .unwrap()
+                .socket,
+            socket
+        );
         #[cfg(windows)]
         {
             let env = Env::for_test(&profile, &[("APPDATA", appdata.to_str().unwrap())]);
@@ -426,10 +525,26 @@ mod tests {
     #[test]
     fn windows_home_uses_absolute_profile_or_home_drive() {
         let home = tempfile::tempdir().unwrap();
-        let vars = [("HOME".into(), "relative-home".into()), ("UserProfile".into(), home.path().to_string_lossy().into_owned())].into_iter().collect();
+        let vars = [
+            ("HOME".into(), "relative-home".into()),
+            (
+                "UserProfile".into(),
+                home.path().to_string_lossy().into_owned(),
+            ),
+        ]
+        .into_iter()
+        .collect();
         assert_eq!(Env::from_vars(vars).unwrap().home, home.path());
-        let vars = [("HOMEDRIVE".into(), "C:".into()), ("HOMEPATH".into(), r"\Users\项目 person".into())].into_iter().collect();
-        assert_eq!(Env::from_vars(vars).unwrap().home, Path::new(r"C:\Users\项目 person"));
+        let vars = [
+            ("HOMEDRIVE".into(), "C:".into()),
+            ("HOMEPATH".into(), r"\Users\项目 person".into()),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            Env::from_vars(vars).unwrap().home,
+            Path::new(r"C:\Users\项目 person")
+        );
     }
 
     #[test]
@@ -455,12 +570,21 @@ mod tests {
         assert!(same_dir(&dir, &trailing));
         assert!(same_dir(&dir, &dir.join("child").join("..")));
         assert!(!same_dir(&dir, &other));
-        assert!(!same_dir(&home.path().join("missing"), &home.path().join("other missing")));
-        assert!(!same_dir(&home.path().join("MissingCase"), &home.path().join("missingcase")));
+        assert!(!same_dir(
+            &home.path().join("missing"),
+            &home.path().join("other missing")
+        ));
+        assert!(!same_dir(
+            &home.path().join("MissingCase"),
+            &home.path().join("missingcase")
+        ));
         assert!(!same_dir(Path::new(""), Path::new("")));
         #[cfg(windows)]
         {
-            assert!(same_dir(&dir, &PathBuf::from(dir.to_string_lossy().replace('\\', "/"))));
+            assert!(same_dir(
+                &dir,
+                &PathBuf::from(dir.to_string_lossy().replace('\\', "/"))
+            ));
             assert!(same_dir(&dir, &std::fs::canonicalize(&dir).unwrap()));
         }
     }
@@ -477,8 +601,14 @@ mod tests {
         assert!(within_dir(&child, &alias));
         assert!(within_dir(&alias, &dir));
         assert!(!within_dir(&other, &dir));
-        assert!(!within_dir(&child.join("../..").join("different directory"), &dir));
-        assert!(!within_dir(&home.path().join("项目 worktree sibling"), &dir));
+        assert!(!within_dir(
+            &child.join("../..").join("different directory"),
+            &dir
+        ));
+        assert!(!within_dir(
+            &home.path().join("项目 worktree sibling"),
+            &dir
+        ));
         assert!(!within_dir(Path::new(""), &dir));
         assert!(!within_dir(&child, Path::new("")));
         #[cfg(windows)]
@@ -493,7 +623,9 @@ mod tests {
     #[test]
     fn names_requiring_verbatim_semantics_stay_verbatim() {
         let home = tempfile::tempdir().unwrap();
-        let dir = std::fs::canonicalize(home.path()).unwrap().join("trailing.");
+        let dir = std::fs::canonicalize(home.path())
+            .unwrap()
+            .join("trailing.");
         std::fs::create_dir(&dir).unwrap();
         let canonical = canonicalize(&dir).unwrap();
         assert!(canonical.is_dir());
@@ -509,12 +641,26 @@ mod tests {
         let socket = home.path().join("项目 session/socket.sock");
         let reply = serde_json::json!({"sessions": [{"name": "only", "running": true, "socket_path": socket}]});
         runner.on("session list --json", ok(&reply.to_string()));
-        assert_eq!(resolve_session(&SessionFlags::default(), &env, &runner).unwrap(), Session { socket, name: Some("only".into()) });
+        assert_eq!(
+            resolve_session(&SessionFlags::default(), &env, &runner).unwrap(),
+            Session {
+                socket,
+                name: Some("only".into())
+            }
+        );
         let runner = FakeRunner::new();
         runner.on("session list --json", ok(r#"{"sessions":[]}"#));
-        assert_eq!(resolve_session(&SessionFlags::default(), &env, &runner).unwrap().socket, env.herdr_config_dir().join("herdr.sock"));
+        assert_eq!(
+            resolve_session(&SessionFlags::default(), &env, &runner)
+                .unwrap()
+                .socket,
+            env.herdr_config_dir().join("herdr.sock")
+        );
         let runner = FakeRunner::new();
-        runner.on("session list --json", ok(&SESSIONS.replace("\"default\":true", "\"default\":false")));
+        runner.on(
+            "session list --json",
+            ok(&SESSIONS.replace("\"default\":true", "\"default\":false")),
+        );
         assert!(resolve_session(&SessionFlags::default(), &env, &runner).is_err());
     }
 }

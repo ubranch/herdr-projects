@@ -50,7 +50,7 @@ Agents report their own progress, so a thread that asked you something shows `ne
 
 <table>
 <tr>
-<td align="center" valign="top" width="33%"><h3>1️⃣</h3><b>Install and configure</b><br /><sub>On macOS/Linux, run <code>herdr plugin install eliasstravik/herdr-projects</code>. On Windows, use the <a href="docs/getting-started.md#2-install-the-plugin">current-checkout source install</a>. Then run <code>herdr-projects configure</code> once for the sidebar rows, the popup key, the progress hooks and the <code>/autoproject</code> skill.</sub></td>
+<td align="center" valign="top" width="33%"><h3>1️⃣</h3><b>Install and configure</b><br /><sub>On macOS/Linux, run <code>herdr plugin install eliasstravik/herdr-projects</code>. On Windows, use the <a href="docs/getting-started.md#2-install-the-plugin">fork-main source install</a>. Then run <code>herdr-projects configure</code> once for the sidebar rows, the popup key, the progress hooks and the <code>/autoproject</code> skill.</sub></td>
 <td align="center" valign="top" width="33%"><h3>2️⃣</h3><b>Create and open a project</b><br /><sub>Run <code>herdr plugin action invoke new --plugin herdr-projects</code>, or <code>herdr-projects new "Billing" --repo ~/dev/app</code> then <code>herdr-projects open billing</code>. A coordinator agent starts in the project's folder and primes itself from its <code>AGENTS.md</code>.</sub></td>
 <td align="center" valign="top" width="33%"><h3>3️⃣</h3><b>Tell it what you want</b><br /><sub>Describe the work in the coordinator's pane. It suggests threads, you say go ahead, and the sidebar shows each thread's state as it works.</sub></td>
 </tr>
@@ -71,9 +71,9 @@ Native Windows x64 currently needs PowerShell 7 and a Rust MSVC source build fro
 
 ## Updating
 
-**Windows fork policy:** preserve the port on `ubranch/herdr-projects`'s stable `main`, and merge upstream `main` only after Windows/Linux tests and real CLI smoke checks pass for the candidate. The **Upstream sync** workflow is configured for a best-effort 15-minute schedule and manual dispatch. Open branches and PRs are **track only**: no merging, testing or installing unmerged code, including upstream Windows PR #100. Merged PRs become ordinary upstream `main` updates. Conflicts or failing gates stop promotion, never force/reset the port. See [fork maintenance and activation](docs/operations.md#windows-fork-maintenance).
+**Windows fork policy:** preserve the port on `ubranch/herdr-projects`'s stable `main`, and merge upstream `main` only after the exact candidate passes both Windows/Linux native gates: `cargo +stable fmt --all -- --check` and `cargo +stable clippy --locked --all-targets --target <native-target> -- -D warnings`, followed by locked tests/builds and real CLI smoke checks. The **Upstream sync** workflow is configured for a best-effort 15-minute schedule and manual dispatch. Open branches and PRs are **track only**: no merging, testing or installing unmerged code, including upstream Windows PR #100. Merged PRs become ordinary upstream `main` updates. Conflicts or failing gates stop promotion, never force/reset the port. See [fork maintenance and activation](docs/operations.md#windows-fork-maintenance); required gates are not a claim that a run has passed.
 
-The reviewed port and sync workflow are published on `ubranch/herdr-projects`'s `main` (commit `51d37d1`). From a clean fork `main` checkout whose `origin` is `ubranch/herdr-projects`, run `git pull --ff-only origin main` and deliberately rebuild with `scripts/install.ps1`. Cloud sync does not install binaries or overwrite local development work; Windows release assets remain unpublished. Do not switch to upstream `main` to satisfy `update`. See [Updating](docs/getting-started.md#updating).
+The Windows port and sync workflow are published on `ubranch/herdr-projects`'s `main`. From a clean fork `main` checkout whose `origin` is `ubranch/herdr-projects`, run `git pull --ff-only origin main` and deliberately rebuild with `scripts/install.ps1`. The Rust binary implements the plugin; PowerShell scripts only build, install and link it. Cloud sync does not install binaries or overwrite local development work; Windows release assets remain unpublished. Do not switch to upstream `main` to satisfy `update`. See [Updating](docs/getting-started.md#updating); stop/restart the ticker only when deliberately updating the installed plugin, not during source checks, and leave existing Herdr sessions running.
 
 Before upgrading an existing Unix installation to this port, stop its ticker with the old binary: ticker metadata now lives in `.ticker.info`, not `.ticker.lock`.
 
@@ -88,7 +88,7 @@ herdr-projects ticker start
 
 Herdr reinstalls the plugin in the same folder, and the plugin keeps your `~/.local/bin/herdr-projects` link pointing at it. If you linked a local checkout with `herdr plugin link` instead, run `git pull --ff-only origin main` from a clean `main` checkout and `sh scripts/install.sh` in place of the `herdr plugin install` line.
 
-**From then on:**
+**From then on, for release-based macOS/Linux updates:**
 
 ```bash
 herdr-projects update           # fetch, install the new binary, doctor --fix, restart the ticker

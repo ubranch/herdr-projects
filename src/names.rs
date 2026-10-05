@@ -37,7 +37,10 @@ pub fn is_valid(name: &str) -> bool {
 
 /// The first coordinator name that is not among `taken`.
 pub fn free_coordinator(slug: &str, taken: &[String]) -> String {
-    (0..).map(|n| coordinator(slug, n)).find(|name| !taken.contains(name)).unwrap_or_default()
+    (0..)
+        .map(|n| coordinator(slug, n))
+        .find(|name| !taken.contains(name))
+        .unwrap_or_default()
 }
 
 /// Two slugs whose thread or coordinator names collide after truncation.
@@ -52,14 +55,21 @@ mod tests {
     #[test]
     fn names_fit_herdrs_limit_for_the_longest_slug() {
         let slug = "a".repeat(40);
-        for name in [coordinator(&slug, 0), coordinator(&slug, 99), thread(&slug, "t-12345")] {
+        for name in [
+            coordinator(&slug, 0),
+            coordinator(&slug, 99),
+            thread(&slug, "t-12345"),
+        ] {
             assert!(is_valid(&name), "{name} ({})", name.len());
         }
         assert_eq!(coordinator("demo", 0), "hpc-demo");
         assert_eq!(coordinator("demo", 2), "hpc-demo-2");
         assert_eq!(thread("demo", "t-0001"), "hp-demo-t-0001");
         // A truncation never leaves a trailing hyphen before the suffix.
-        assert_eq!(coordinator("aaaaaaaaaaaaaaaaaaaaaaa-bbbb", 0), "hpc-aaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(
+            coordinator("aaaaaaaaaaaaaaaaaaaaaaa-bbbb", 0),
+            "hpc-aaaaaaaaaaaaaaaaaaaaaaa"
+        );
         assert!(!is_valid("Hp-x"));
         assert!(!is_valid(""));
     }

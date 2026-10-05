@@ -17,7 +17,9 @@ const FILE_NAME: &str = "herdr-projects.exe";
 
 /// The folder the link goes in: `$XDG_BIN_HOME`, else `~/.local/bin`.
 pub fn bin_dir(env: &Env) -> PathBuf {
-    env.var("XDG_BIN_HOME").map(PathBuf::from).unwrap_or_else(|| env.home.join(".local/bin"))
+    env.var("XDG_BIN_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env.home.join(".local/bin"))
 }
 
 pub fn link_path(env: &Env) -> PathBuf {
@@ -40,7 +42,6 @@ pub enum State {
     /// A file, or a link somewhere else (a checkout of the user's own): never touched.
     Foreign(String),
 }
-
 
 #[cfg(windows)]
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -88,33 +89,38 @@ pub fn state(env: &Env, binary: &Path) -> State {
         if std::fs::symlink_metadata(&command).is_err() {
             return State::Missing;
         }
-        return match managed_copy(&command) {
-            Some(marker) if file_hash(binary).ok().as_deref() == Some(marker.sha256.as_str())
-                && crate::paths::canonicalize(binary).ok() == crate::paths::canonicalize(&marker.binary).ok() => State::Ours,
+        match managed_copy(&command) {
+            Some(marker)
+                if file_hash(binary).ok().as_deref() == Some(marker.sha256.as_str())
+                    && crate::paths::canonicalize(binary).ok()
+                        == crate::paths::canonicalize(&marker.binary).ok() =>
+            {
+                State::Ours
+            }
             Some(marker) => State::Stale(marker.binary),
             None => State::Foreign("not an unchanged herdr-projects command copy".into()),
-        };
+        }
     }
     #[cfg(unix)]
     {
-    let link = link_path(env);
-    let Ok(meta) = std::fs::symlink_metadata(&link) else {
-        return State::Missing;
-    };
-    if !meta.file_type().is_symlink() {
-        return State::Foreign("a file, not a link".into());
-    }
-    let Ok(target) = std::fs::read_link(&link) else {
-        return State::Foreign("an unreadable link".into());
-    };
-    let target = link.parent().map(|dir| dir.join(&target)).unwrap_or(target);
-    let binary = crate::paths::canonicalize(binary).unwrap_or_else(|_| binary.to_path_buf());
-    match crate::paths::canonicalize(&target) {
-        Ok(resolved) if resolved == binary => State::Ours,
-        Err(_) => State::Stale(target),
-        Ok(_) if target.starts_with(plugins_dir(env)) => State::Stale(target),
-        Ok(_) => State::Foreign(format!("a link to {}", target.display())),
-    }
+        let link = link_path(env);
+        let Ok(meta) = std::fs::symlink_metadata(&link) else {
+            return State::Missing;
+        };
+        if !meta.file_type().is_symlink() {
+            return State::Foreign("a file, not a link".into());
+        }
+        let Ok(target) = std::fs::read_link(&link) else {
+            return State::Foreign("an unreadable link".into());
+        };
+        let target = link.parent().map(|dir| dir.join(&target)).unwrap_or(target);
+        let binary = crate::paths::canonicalize(binary).unwrap_or_else(|_| binary.to_path_buf());
+        match crate::paths::canonicalize(&target) {
+            Ok(resolved) if resolved == binary => State::Ours,
+            Err(_) => State::Stale(target),
+            Ok(_) if target.starts_with(plugins_dir(env)) => State::Stale(target),
+            Ok(_) => State::Foreign(format!("a link to {}", target.display())),
+        }
     }
 }
 
@@ -131,11 +137,13 @@ pub fn ensure(env: &Env, binary: &Path) -> Result<State> {
     if matches!(found, State::Missing | State::Stale(_)) {
         let link = link_path(env);
         let dir = bin_dir(env);
-        std::fs::create_dir_all(&dir).with_context(|| format!("could not create {}", dir.display()))?;
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("could not create {}", dir.display()))?;
         // Link under a temporary name, then rename over: never a moment without a command.
         let tmp = dir.join(format!(".{NAME}.{}", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
-        std::os::unix::fs::symlink(binary, &tmp).with_context(|| format!("could not link {}", link.display()))?;
+        std::os::unix::fs::symlink(binary, &tmp)
+            .with_context(|| format!("could not link {}", link.display()))?;
         if let Err(error) = std::fs::rename(&tmp, &link) {
             let _ = std::fs::remove_file(&tmp);
             return Err(error).with_context(|| format!("could not link {}", link.display()));
@@ -153,9 +161,15 @@ pub fn ensure(env: &Env, binary: &Path) -> Result<State> {
     let command = link_path(env);
     let dir = bin_dir(env);
     std::fs::create_dir_all(&dir).with_context(|| format!("could not create {}", dir.display()))?;
-    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
     let tmp = dir.join(format!(".{NAME}.{}.{}.tmp.exe", std::process::id(), nonce));
-    let previous = dir.join(format!(".{NAME}.{}.{}.previous.exe", std::process::id(), nonce));
+    let previous = dir.join(format!(
+        ".{NAME}.{}.{}.previous.exe",
+        std::process::id(),
+        nonce
+    ));
     let result = (|| -> Result<()> {
         std::fs::copy(binary, &tmp)?;
         let marker = InstalledCommand {
@@ -168,19 +182,25 @@ pub fn ensure(env: &Env, binary: &Path) -> Result<State> {
         }
         if let Err(error) = std::fs::rename(&tmp, &command) {
             if replaced {
-                std::fs::rename(&previous, &command).with_context(|| format!("could not restore {}", command.display()))?;
+                std::fs::rename(&previous, &command)
+                    .with_context(|| format!("could not restore {}", command.display()))?;
             }
             return Err(error.into());
         }
         if let Err(error) = crate::project::write_json(&marker_path(&command), &marker) {
-            std::fs::remove_file(&command).with_context(|| format!("could not roll back {}", command.display()))?;
+            std::fs::remove_file(&command)
+                .with_context(|| format!("could not roll back {}", command.display()))?;
             if replaced {
-                std::fs::rename(&previous, &command).with_context(|| format!("could not restore {}", command.display()))?;
+                std::fs::rename(&previous, &command)
+                    .with_context(|| format!("could not restore {}", command.display()))?;
             }
             return Err(error);
         }
         if replaced && let Err(error) = std::fs::remove_file(&previous) {
-            eprintln!("herdr-projects: previous command retained at {}: {error}", previous.display());
+            eprintln!(
+                "herdr-projects: previous command retained at {}: {error}",
+                previous.display()
+            );
         }
         Ok(())
     })();
@@ -200,7 +220,14 @@ pub fn resolves_to(env: &Env, path_var: &str) -> Option<PathBuf> {
 pub fn check(env: &Env, binary: &Path, path_var: &str, fix: bool) -> (Option<bool>, String) {
     let link = link_path(env);
     if !installable(binary) {
-        return (None, format!("{} is not an installed build, so {} was not checked", binary.display(), link.display()));
+        return (
+            None,
+            format!(
+                "{} is not an installed build, so {} was not checked",
+                binary.display(),
+                link.display()
+            ),
+        );
     }
     let (found, fixed) = if fix {
         match ensure(env, binary) {
@@ -214,24 +241,60 @@ pub fn check(env: &Env, binary: &Path, path_var: &str, fix: bool) -> (Option<boo
         (state(env, binary), false)
     };
     let mut detail = match &found {
-        State::Foreign(what) => return (None, format!("{} is {what}, so it was left alone; move it away and run `doctor --fix` to install this binary there", link.display())),
-        State::Missing if !fix => return (None, format!("{} is missing; `doctor --fix` (or restarting Herdr) installs it", link.display())),
-        State::Stale(old) if !fix => return (None, format!("{} refers to {}, not this binary; `doctor --fix` (or restarting Herdr) refreshes it", link.display(), old.display())),
+        State::Foreign(what) => {
+            return (
+                None,
+                format!(
+                    "{} is {what}, so it was left alone; move it away and run `doctor --fix` to install this binary there",
+                    link.display()
+                ),
+            );
+        }
+        State::Missing if !fix => {
+            return (
+                None,
+                format!(
+                    "{} is missing; `doctor --fix` (or restarting Herdr) installs it",
+                    link.display()
+                ),
+            );
+        }
+        State::Stale(old) if !fix => {
+            return (
+                None,
+                format!(
+                    "{} refers to {}, not this binary; `doctor --fix` (or restarting Herdr) refreshes it",
+                    link.display(),
+                    old.display()
+                ),
+            );
+        }
         _ if fixed => format!("fixed: {} now runs this binary", link.display()),
         _ => format!("{} runs this binary", link.display()),
     };
     let dir = bin_dir(env);
     if !std::env::split_paths(path_var).any(|d| d == dir) {
         #[cfg(unix)]
-        detail.push_str(&format!("; but {} is not on your PATH: add `export PATH=\"{}:$PATH\"` to your shell profile", dir.display(), dir.display()));
+        detail.push_str(&format!(
+            "; but {} is not on your PATH: add `export PATH=\"{}:$PATH\"` to your shell profile",
+            dir.display(),
+            dir.display()
+        ));
         #[cfg(windows)]
         detail.push_str(&format!("; but {} is not on your PATH: add it to your user Path in Windows Environment Variables", dir.display()));
         return (None, detail);
     }
     match resolves_to(env, path_var) {
-        Some(first) if crate::paths::canonicalize(&first).ok() != crate::paths::canonicalize(&link).ok()
-            && crate::paths::canonicalize(&first).ok() != crate::paths::canonicalize(binary).ok() => {
-            detail.push_str(&format!("; but your PATH finds {} first, which is another binary", first.display()));
+        Some(first)
+            if crate::paths::canonicalize(&first).ok()
+                != crate::paths::canonicalize(&link).ok()
+                && crate::paths::canonicalize(&first).ok()
+                    != crate::paths::canonicalize(binary).ok() =>
+        {
+            detail.push_str(&format!(
+                "; but your PATH finds {} first, which is another binary",
+                first.display()
+            ));
             (None, detail)
         }
         _ => (Some(true), detail),
@@ -246,7 +309,9 @@ mod tests {
     fn setup() -> (tempfile::TempDir, Env, PathBuf) {
         let home = tempfile::tempdir().unwrap();
         let env = Env::for_test(home.path(), &[]);
-        let binary = home.path().join(".config/herdr/plugins/github/herdr-projects-abc/target/release/herdr-projects");
+        let binary = home
+            .path()
+            .join(".config/herdr/plugins/github/herdr-projects-abc/target/release/herdr-projects");
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
         std::fs::write(&binary, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -271,11 +336,14 @@ mod tests {
     fn a_dangling_link_or_one_into_another_plugin_install_is_replaced() {
         let (home, env, binary) = setup();
         std::fs::create_dir_all(bin_dir(&env)).unwrap();
-        std::os::unix::fs::symlink(home.path().join("gone/herdr-projects"), link_path(&env)).unwrap();
+        std::os::unix::fs::symlink(home.path().join("gone/herdr-projects"), link_path(&env))
+            .unwrap();
         assert!(matches!(ensure(&env, &binary).unwrap(), State::Stale(_)));
         assert_eq!(std::fs::read_link(link_path(&env)).unwrap(), binary);
 
-        let other = home.path().join(".config/herdr/plugins/github/herdr-projects-old/target/release/herdr-projects");
+        let other = home
+            .path()
+            .join(".config/herdr/plugins/github/herdr-projects-old/target/release/herdr-projects");
         std::fs::create_dir_all(other.parent().unwrap()).unwrap();
         std::fs::write(&other, "").unwrap();
         std::fs::remove_file(link_path(&env)).unwrap();
@@ -298,7 +366,9 @@ mod tests {
         assert!(detail.contains("left alone"), "{detail}");
 
         std::fs::remove_file(link_path(&env)).unwrap();
-        let own = home.path().join("dev/herdr-projects/target/release/herdr-projects");
+        let own = home
+            .path()
+            .join("dev/herdr-projects/target/release/herdr-projects");
         std::fs::create_dir_all(own.parent().unwrap()).unwrap();
         std::fs::write(&own, "").unwrap();
         std::os::unix::fs::symlink(&own, link_path(&env)).unwrap();
@@ -311,7 +381,10 @@ mod tests {
         let (_home, env, binary) = setup();
         let (ok, detail) = check(&env, &binary, "/usr/bin", true);
         assert_eq!(ok, None);
-        assert!(detail.contains("is not on your PATH: add `export PATH="), "{detail}");
+        assert!(
+            detail.contains("is not on your PATH: add `export PATH="),
+            "{detail}"
+        );
         assert!(link_path(&env).is_symlink());
     }
 
@@ -325,7 +398,10 @@ mod tests {
         let path = format!("{}:{}", early.display(), path_with(&env));
         let (ok, detail) = check(&env, &binary, &path, true);
         assert_eq!(ok, None);
-        assert!(detail.contains("finds") && detail.contains("early"), "{detail}");
+        assert!(
+            detail.contains("finds") && detail.contains("early"),
+            "{detail}"
+        );
     }
 
     #[test]
@@ -333,7 +409,12 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let env = Env::for_test(home.path(), &[("XDG_BIN_HOME", "/xdg/bin")]);
         assert_eq!(link_path(&env), PathBuf::from("/xdg/bin/herdr-projects"));
-        let (ok, _) = check(&env, Path::new("/src/target/debug/herdr-projects"), "", true);
+        let (ok, _) = check(
+            &env,
+            Path::new("/src/target/debug/herdr-projects"),
+            "",
+            true,
+        );
         assert_eq!(ok, None);
         assert!(!Path::new("/xdg/bin").exists());
     }
@@ -346,7 +427,10 @@ mod tests {
             .arg(checkout)
             .env_clear()
             .env("HOME", home)
-            .env("PATH", format!("{}:/usr/bin:/bin", home.join(".local/bin").display()))
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", home.join(".local/bin").display()),
+            )
             .output()
             .unwrap();
         assert!(out.status.success());
@@ -360,7 +444,8 @@ mod tests {
         let checkout = plugins.join(".tmp-install-12-34/checkout");
         let link = home.path().join(".local/bin/herdr-projects");
         // Herdr's folder for plugin id `herdr-projects`: slug plus sha256's first 12 hex digits.
-        let final_binary = plugins.join("github/herdr-projects-b1278ffb803c/target/release/herdr-projects");
+        let final_binary =
+            plugins.join("github/herdr-projects-b1278ffb803c/target/release/herdr-projects");
 
         // Anywhere but a Herdr install checkout: nothing.
         run_script(home.path(), &home.path().join("dev/herdr-projects"));
@@ -397,7 +482,10 @@ mod windows_tests {
     fn setup() -> (tempfile::TempDir, Env, PathBuf) {
         let home = tempfile::tempdir().unwrap();
         let env = Env::for_test(home.path(), &[]);
-        let binary = env.herdr_config_dir().join("plugins/github/项目 plugin/target/release").join(FILE_NAME);
+        let binary = env
+            .herdr_config_dir()
+            .join("plugins/github/项目 plugin/target/release")
+            .join(FILE_NAME);
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
         std::fs::write(&binary, b"first build").unwrap();
         (home, env, binary)
@@ -411,7 +499,10 @@ mod windows_tests {
         let command = link_path(&env);
         assert!(!command.is_symlink());
         assert_eq!(std::fs::read(&command).unwrap(), b"first build");
-        assert_eq!(installed_source(&command).unwrap(), crate::paths::canonicalize(&binary).unwrap());
+        assert_eq!(
+            installed_source(&command).unwrap(),
+            crate::paths::canonicalize(&binary).unwrap()
+        );
         assert_eq!(ensure(&env, &binary).unwrap(), State::Ours);
 
         std::fs::write(&binary, b"second build").unwrap();
@@ -419,7 +510,10 @@ mod windows_tests {
         assert!(matches!(ensure(&env, &binary).unwrap(), State::Stale(_)));
         assert_eq!(std::fs::read(&command).unwrap(), b"second build");
         assert_eq!(ensure(&env, &binary).unwrap(), State::Ours);
-        let path = std::env::join_paths([bin_dir(&env)]).unwrap().to_string_lossy().into_owned();
+        let path = std::env::join_paths([bin_dir(&env)])
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         let (ok, detail) = check(&env, &binary, &path, false);
         assert_eq!(ok, Some(true), "{detail}");
     }
@@ -443,11 +537,17 @@ mod windows_tests {
     fn reinstalling_identical_bytes_updates_the_source_checkout() {
         let (home, env, binary) = setup();
         ensure(&env, &binary).unwrap();
-        let moved = home.path().join("new plugin/target/release").join(FILE_NAME);
+        let moved = home
+            .path()
+            .join("new plugin/target/release")
+            .join(FILE_NAME);
         std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
         std::fs::copy(&binary, &moved).unwrap();
         assert!(matches!(ensure(&env, &moved).unwrap(), State::Stale(_)));
-        assert_eq!(installed_source(&link_path(&env)).unwrap(), crate::paths::canonicalize(&moved).unwrap());
+        assert_eq!(
+            installed_source(&link_path(&env)).unwrap(),
+            crate::paths::canonicalize(&moved).unwrap()
+        );
     }
 
     #[test]
@@ -455,14 +555,13 @@ mod windows_tests {
         let (_home, env, binary) = setup();
         ensure(&env, &binary).unwrap();
         let marker = marker_path(&link_path(&env));
-        let mut permissions = std::fs::metadata(&marker).unwrap().permissions();
+        let original_permissions = std::fs::metadata(&marker).unwrap().permissions();
+        let mut permissions = original_permissions.clone();
         permissions.set_readonly(true);
         std::fs::set_permissions(&marker, permissions).unwrap();
         std::fs::write(&binary, b"next build").unwrap();
         let result = ensure(&env, &binary);
-        let mut permissions = std::fs::metadata(&marker).unwrap().permissions();
-        permissions.set_readonly(false);
-        std::fs::set_permissions(&marker, permissions).unwrap();
+        std::fs::set_permissions(&marker, original_permissions).unwrap();
         assert!(result.is_err());
         assert_eq!(std::fs::read(link_path(&env)).unwrap(), b"first build");
         assert!(matches!(state(&env, &binary), State::Stale(_)));
@@ -477,10 +576,16 @@ mod windows_tests {
         std::fs::create_dir(&early).unwrap();
         std::fs::write(early.join("herdr-projects.cmd"), b"@echo off").unwrap();
         let shadow = early.join("herdr-projects.cmd");
-        let path = std::env::join_paths([early, bin_dir(&env)]).unwrap().to_string_lossy().into_owned();
+        let path = std::env::join_paths([early, bin_dir(&env)])
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         let (ok, _) = check(&env, &binary, &path, true);
         assert_eq!(ok, None);
-        assert_eq!(crate::paths::canonicalize(&resolves_to(&env, &path).unwrap()).unwrap(), crate::paths::canonicalize(&shadow).unwrap());
+        assert_eq!(
+            crate::paths::canonicalize(resolves_to(&env, &path).unwrap()).unwrap(),
+            crate::paths::canonicalize(&shadow).unwrap()
+        );
         assert_eq!(state(&env, &binary), State::Ours);
         let (ok, _) = check(&env, &binary, "", false);
         assert_eq!(ok, None);

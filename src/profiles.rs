@@ -80,7 +80,14 @@ pub struct Profile {
 
 impl Profile {
     fn builtin(kind: &str) -> Profile {
-        Profile { name: kind.to_string(), entry: Entry { agent: kind.to_string(), ..Entry::default() }, builtin: true }
+        Profile {
+            name: kind.to_string(),
+            entry: Entry {
+                agent: kind.to_string(),
+                ..Entry::default()
+            },
+            builtin: true,
+        }
     }
 
     pub fn agent(&self) -> &str {
@@ -90,7 +97,8 @@ impl Profile {
     /// The agent CLI arguments this profile launches with: the model and
     /// effort flags for its harness, then its own arguments.
     pub fn args(&self) -> Vec<String> {
-        let mut args = typed_args(&self.entry.agent, &self.entry.model, &self.entry.effort).unwrap_or_default();
+        let mut args = typed_args(&self.entry.agent, &self.entry.model, &self.entry.effort)
+            .unwrap_or_default();
         args.extend(self.entry.args.iter().cloned());
         args
     }
@@ -99,7 +107,14 @@ impl Profile {
     /// `omp · model gpt-5.5 · effort high · 2 extra args — Cheap tier`.
     pub fn summary(&self) -> String {
         let e = &self.entry;
-        let mut parts = vec![e.agent.clone(), if e.model.is_empty() { "default model".into() } else { format!("model {}", e.model) }];
+        let mut parts = vec![
+            e.agent.clone(),
+            if e.model.is_empty() {
+                "default model".into()
+            } else {
+                format!("model {}", e.model)
+            },
+        ];
         if !e.effort.is_empty() {
             parts.push(format!("effort {}", e.effort));
         }
@@ -138,7 +153,8 @@ pub fn load(config_dir: &Path) -> Result<Config> {
     let Ok(text) = std::fs::read_to_string(&file) else {
         return Ok(Config::default());
     };
-    let config: Config = toml::from_str(&text).with_context(|| format!("{} does not parse", file.display()))?;
+    let config: Config =
+        toml::from_str(&text).with_context(|| format!("{} does not parse", file.display()))?;
     for (name, entry) in &config.profiles {
         validate(name, entry).with_context(|| format!("{}: [profiles.{name}]", file.display()))?;
     }
@@ -149,7 +165,11 @@ impl Config {
     /// A profile by name: the user's table, else the built-in of that kind.
     pub fn get(&self, name: &str) -> Option<Profile> {
         match self.profiles.get(name) {
-            Some(entry) => Some(Profile { name: name.to_string(), entry: entry.clone(), builtin: false }),
+            Some(entry) => Some(Profile {
+                name: name.to_string(),
+                entry: entry.clone(),
+                builtin: false,
+            }),
             None => crate::agents::is_kind(name).then(|| Profile::builtin(name)),
         }
     }
@@ -158,7 +178,12 @@ impl Config {
     /// not replace.
     pub fn listed(&self, detected: &[String]) -> Vec<Profile> {
         let mut out: Vec<Profile> = self.profiles.keys().filter_map(|n| self.get(n)).collect();
-        out.extend(detected.iter().filter(|k| !self.profiles.contains_key(*k)).map(|k| Profile::builtin(k)));
+        out.extend(
+            detected
+                .iter()
+                .filter(|k| !self.profiles.contains_key(*k))
+                .map(|k| Profile::builtin(k)),
+        );
         out
     }
 
@@ -178,13 +203,22 @@ impl Config {
             Role::Thread => &self.defaults.thread_profile,
             Role::Coordinator => &self.defaults.coordinator_profile,
         };
-        value.clone().filter(|v| !v.is_empty()).unwrap_or_else(|| "claude".into())
+        value
+            .clone()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "claude".into())
     }
 }
 
 /// A profile name: letters, digits, `.`, `_` and `-`, up to 40 characters.
 pub fn validate_name(name: &str) -> Result<()> {
-    if name.is_empty() || name.len() > 40 || name.starts_with(['-', '.']) || !name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
+    if name.is_empty()
+        || name.len() > 40
+        || name.starts_with(['-', '.'])
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+    {
         bail!("`{name}` is not a profile name: use letters, digits, `.`, `_` and `-` (at most 40)");
     }
     Ok(())
@@ -193,7 +227,11 @@ pub fn validate_name(name: &str) -> Result<()> {
 fn validate(name: &str, entry: &Entry) -> Result<()> {
     validate_name(name)?;
     if !crate::agents::is_kind(&entry.agent) {
-        bail!("agent `{}` is not a Herdr agent kind ({})", entry.agent, crate::agents::KINDS.join(", "));
+        bail!(
+            "agent `{}` is not a Herdr agent kind ({})",
+            entry.agent,
+            crate::agents::KINDS.join(", ")
+        );
     }
     typed_args(&entry.agent, &entry.model, &entry.effort)?;
     Ok(())
@@ -209,9 +247,13 @@ fn validate(name: &str, entry: &Entry) -> Result<()> {
 pub fn effort_values(agent: &str) -> Option<&'static [&'static str]> {
     match agent {
         "claude" => Some(&["low", "medium", "high", "xhigh", "max"]),
-        "codex" => Some(&["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]),
+        "codex" => Some(&[
+            "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+        ]),
         "copilot" => Some(&["none", "minimal", "low", "medium", "high", "xhigh", "max"]),
-        "omp" => Some(&["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]),
+        "omp" => Some(&[
+            "off", "minimal", "low", "medium", "high", "xhigh", "max", "auto",
+        ]),
         "pi" => Some(&["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
         _ => None,
     }
@@ -223,7 +265,9 @@ pub fn is_model_name(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && !value.starts_with('-')
-        && value.chars().all(|c| c.is_ascii_alphanumeric() || "._-/:@+[]".contains(c))
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-/:@+[]".contains(c))
 }
 
 /// The model and effort flags for `agent`: `--model NAME` for every harness,
@@ -239,14 +283,22 @@ pub fn typed_args(agent: &str, model: &str, effort: &str) -> Result<Vec<String>>
     }
     if !effort.is_empty() {
         let Some(values) = effort_values(agent) else {
-            bail!("herdr-projects knows no reasoning-effort flag for {agent}; leave effort empty and put the flag in the profile's args");
+            bail!(
+                "herdr-projects knows no reasoning-effort flag for {agent}; leave effort empty and put the flag in the profile's args"
+            );
         };
         if !values.contains(&effort) {
-            bail!("effort `{effort}` is not one of {} for {agent}", values.join(", "));
+            bail!(
+                "effort `{effort}` is not one of {} for {agent}",
+                values.join(", ")
+            );
         }
         match agent {
             "claude" | "copilot" => args.extend(["--effort".to_string(), effort.to_string()]),
-            "codex" => args.extend(["-c".to_string(), format!("model_reasoning_effort=\"{effort}\"")]),
+            "codex" => args.extend([
+                "-c".to_string(),
+                format!("model_reasoning_effort=\"{effort}\""),
+            ]),
             _ => args.extend(["--thinking".to_string(), effort.to_string()]),
         }
     }
@@ -258,7 +310,14 @@ pub fn typed_args(agent: &str, model: &str, effort: &str) -> Result<Vec<String>>
 /// The profile `role` launches with in `project`: `requested`, else the
 /// project's default. Refused when it does not exist or the allow-list does
 /// not name it.
-pub fn resolve(config: &Config, safety: &project::Safety, settings: &project::Settings, role: Role, requested: Option<&str>, slug: &str) -> Result<Profile> {
+pub fn resolve(
+    config: &Config,
+    safety: &project::Safety,
+    settings: &project::Settings,
+    role: Role,
+    requested: Option<&str>,
+    slug: &str,
+) -> Result<Profile> {
     let default = match role {
         Role::Thread => &settings.thread_profile,
         Role::Coordinator => &settings.coordinator_profile,
@@ -271,14 +330,24 @@ pub fn resolve(config: &Config, safety: &project::Safety, settings: &project::Se
     Ok(profile)
 }
 
-pub fn check_allowed(config: &Config, safety: &project::Safety, role: Role, name: &str, slug: &str) -> Result<()> {
+pub fn check_allowed(
+    config: &Config,
+    safety: &project::Safety,
+    role: Role,
+    name: &str,
+    slug: &str,
+) -> Result<()> {
     if let Some(allowed) = config.allowed(safety, role)
         && !allowed.iter().any(|a| a == name)
     {
         bail!(
             "profile `{name}` is not allowed for {} in `{slug}`; allowed: {}. Only the user changes this list (`profile allow {} ... --project {slug}`)",
             role.word(),
-            if allowed.is_empty() { "none".to_string() } else { allowed.join(", ") },
+            if allowed.is_empty() {
+                "none".to_string()
+            } else {
+                allowed.join(", ")
+            },
             role.list_key().trim_end_matches("_profiles"),
         );
     }
@@ -286,7 +355,12 @@ pub fn check_allowed(config: &Config, safety: &project::Safety, role: Role, name
 }
 
 /// Everything `thread start`, `open` and the ticker need to launch a role.
-pub fn for_project(ctx: &Ctx, project: &Project, role: Role, requested: Option<&str>) -> Result<Profile> {
+pub fn for_project(
+    ctx: &Ctx,
+    project: &Project,
+    role: Role,
+    requested: Option<&str>,
+) -> Result<Profile> {
     let config = load(&ctx.config_dir)?;
     let safety = project.safety(&ctx.config_dir)?;
     let (settings, _) = project.read_project_md()?;
@@ -299,7 +373,11 @@ pub fn for_project(ctx: &Ctx, project: &Project, role: Role, requested: Option<&
 /// of that harness only, and never another harness (issue #45) or a
 /// user profile, which carries its own arguments.
 pub fn launch_args(profile: &Profile, legacy: &[String], legacy_agent: &str) -> Vec<String> {
-    let mut args = if profile.builtin && profile.agent() == legacy_agent { legacy.to_vec() } else { Vec::new() };
+    let mut args = if profile.builtin && profile.agent() == legacy_agent {
+        legacy.to_vec()
+    } else {
+        Vec::new()
+    };
     args.extend(profile.args());
     args
 }
@@ -311,7 +389,10 @@ pub fn legacy_agent(config: &Config, settings: &project::Settings, role: Role) -
         Role::Thread => &settings.thread_profile,
         Role::Coordinator => &settings.coordinator_profile,
     };
-    config.get(default).map(|p| p.entry.agent).unwrap_or_else(|| "claude".into())
+    config
+        .get(default)
+        .map(|p| p.entry.agent)
+        .unwrap_or_else(|| "claude".into())
 }
 
 /// `~/` at the start of an argument or after `=` becomes the home folder,
@@ -347,7 +428,11 @@ pub fn find_executable(env: &Env, name: &str) -> Option<PathBuf> {
     find_executable_on_path(env.var("PATH").unwrap_or(""), env.var("PATHEXT"), name)
 }
 
-pub fn find_executable_on_path(path_var: &str, pathext: Option<&str>, name: &str) -> Option<PathBuf> {
+pub fn find_executable_on_path(
+    path_var: &str,
+    pathext: Option<&str>,
+    name: &str,
+) -> Option<PathBuf> {
     if Path::new(name).components().count() > 1 {
         return executable_in_dir(Path::new(""), pathext, name);
     }
@@ -360,19 +445,35 @@ fn executable_in_dir(dir: &Path, pathext: Option<&str>, name: &str) -> Option<Pa
         use std::os::unix::fs::PermissionsExt as _;
         let _ = pathext;
         let path = dir.join(name);
-        std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).then_some(path)
+        std::fs::metadata(&path)
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .then_some(path)
     }
     #[cfg(windows)]
     {
         let extensions = pathext.unwrap_or(".COM;.EXE;.BAT;.CMD");
         let path = dir.join(name);
-        if path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
-            extensions.split(';').any(|suffix| suffix.trim().strip_prefix('.').is_some_and(|suffix| suffix.eq_ignore_ascii_case(ext)))
-        }) && path.is_file() {
+        if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                extensions.split(';').any(|suffix| {
+                    suffix
+                        .trim()
+                        .strip_prefix('.')
+                        .is_some_and(|suffix| suffix.eq_ignore_ascii_case(ext))
+                })
+            })
+            && path.is_file()
+        {
             return Some(path);
         }
-        extensions.split(';').map(str::trim).filter(|ext| ext.starts_with('.'))
-            .map(|ext| dir.join(format!("{name}{ext}"))).find(|path| path.is_file())
+        extensions
+            .split(';')
+            .map(str::trim)
+            .filter(|ext| ext.starts_with('.'))
+            .map(|ext| dir.join(format!("{name}{ext}")))
+            .find(|path| path.is_file())
     }
 }
 
@@ -384,36 +485,73 @@ fn signed_in(env: &Env, kind: &str) -> bool {
     let home = &env.home;
     let any_var = |names: &[&str]| names.iter().any(|n| env.var(n).is_some());
     let any_file = |paths: &[PathBuf]| paths.iter().any(|p| p.is_file());
-    let file_has = |path: PathBuf, needle: &str| std::fs::read_to_string(path).is_ok_and(|t| t.contains(needle));
-    let dir_of = |var: &str, fallback: &str| env.var(var).map(PathBuf::from).unwrap_or_else(|| home.join(fallback));
+    let file_has = |path: PathBuf, needle: &str| {
+        std::fs::read_to_string(path).is_ok_and(|t| t.contains(needle))
+    };
+    let dir_of = |var: &str, fallback: &str| {
+        env.var(var)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(fallback))
+    };
     match kind {
         "claude" => {
             let config = dir_of("CLAUDE_CONFIG_DIR", ".claude");
-            any_var(&["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"])
-                || any_file(&[config.join(".credentials.json")])
+            any_var(&[
+                "ANTHROPIC_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_VERTEX",
+            ]) || any_file(&[config.join(".credentials.json")])
                 || file_has(home.join(".claude.json"), "\"oauthAccount\"")
                 || file_has(config.join(".claude.json"), "\"oauthAccount\"")
         }
-        "codex" => any_var(&["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]) || any_file(&[dir_of("CODEX_HOME", ".codex").join("auth.json")]),
-        "gemini" => {
-            any_var(&["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI"]) || any_file(&[home.join(".gemini/oauth_creds.json")])
+        "codex" => {
+            any_var(&["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"])
+                || any_file(&[dir_of("CODEX_HOME", ".codex").join("auth.json")])
         }
-        "copilot" => any_var(&["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]) || dir_of("COPILOT_HOME", ".copilot").is_dir(),
+        "gemini" => {
+            any_var(&[
+                "GEMINI_API_KEY",
+                "GOOGLE_API_KEY",
+                "GOOGLE_GENAI_USE_VERTEXAI",
+            ]) || any_file(&[home.join(".gemini/oauth_creds.json")])
+        }
+        "copilot" => {
+            any_var(&["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"])
+                || dir_of("COPILOT_HOME", ".copilot").is_dir()
+        }
         "opencode" => {
-            let data = env.var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".local/share"));
-            any_file(&[data.join("opencode/auth.json")]) || any_var(&["ANTHROPIC_API_KEY", "OPENAI_API_KEY"])
+            let data = env
+                .var("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".local/share"));
+            any_file(&[data.join("opencode/auth.json")])
+                || any_var(&["ANTHROPIC_API_KEY", "OPENAI_API_KEY"])
         }
         // The token is in the keychain; the config file appears at sign-in.
         "cursor" => any_var(&["CURSOR_API_KEY"]) || home.join(".cursor/cli-config.json").is_file(),
-        "pi" => any_file(&[dir_of("PI_CODING_AGENT_DIR", ".pi/agent").join("auth.json")]) || any_var(&["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"]),
-        "omp" => any_file(&[home.join(".omp/agent/agent.db"), home.join(".omp/agent/.env"), home.join(".omp/.env")]) || any_var(&["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"]),
+        "pi" => {
+            any_file(&[dir_of("PI_CODING_AGENT_DIR", ".pi/agent").join("auth.json")])
+                || any_var(&["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"])
+        }
+        "omp" => {
+            any_file(&[
+                home.join(".omp/agent/agent.db"),
+                home.join(".omp/agent/.env"),
+                home.join(".omp/.env"),
+            ]) || any_var(&["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"])
+        }
         _ => true,
     }
 }
 
 /// The kinds whose CLI is on `PATH` and looks signed in, in Herdr's order.
 pub fn detect(env: &Env) -> Vec<String> {
-    crate::agents::KINDS.iter().filter(|k| find_executable(env, executable(k)).is_some() && signed_in(env, k)).map(|k| k.to_string()).collect()
+    crate::agents::KINDS
+        .iter()
+        .filter(|k| find_executable(env, executable(k)).is_some() && signed_in(env, k))
+        .map(|k| k.to_string())
+        .collect()
 }
 
 // ---------------------------------------------------------------- editing
@@ -423,17 +561,38 @@ pub fn detect(env: &Env) -> Vec<String> {
 /// popup, never an agent's shell tool.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Change {
-    Add { name: String, entry: Entry },
-    Edit { name: String, agent: Option<String>, model: Option<String>, effort: Option<String>, description: Option<String>, args: Option<Vec<String>> },
-    Remove { name: String },
+    Add {
+        name: String,
+        entry: Entry,
+    },
+    Edit {
+        name: String,
+        agent: Option<String>,
+        model: Option<String>,
+        effort: Option<String>,
+        description: Option<String>,
+        args: Option<Vec<String>>,
+    },
+    Remove {
+        name: String,
+    },
     /// `names: None` removes the list: every profile is allowed.
-    Allow { role: Role, project: Option<PathBuf>, names: Option<Vec<String>> },
-    Default { role: Role, name: String },
+    Allow {
+        role: Role,
+        project: Option<PathBuf>,
+        names: Option<Vec<String>>,
+    },
+    Default {
+        role: Role,
+        name: String,
+    },
 }
 
 pub fn require_person() -> Result<()> {
     if !std::io::stdin().is_terminal() {
-        bail!("profiles and their allow-lists are the user's: this command must be run by a person at a terminal (or from the projects popup); standard input is not a terminal");
+        bail!(
+            "profiles and their allow-lists are the user's: this command must be run by a person at a terminal (or from the projects popup); standard input is not a terminal"
+        );
     }
     Ok(())
 }
@@ -444,7 +603,9 @@ fn table<'a>(doc: &'a mut DocumentMut, key: &str) -> Result<&'a mut Table> {
         t.set_implicit(true);
         doc[key] = Item::Table(t);
     }
-    doc[key].as_table_mut().with_context(|| format!("`{key}` in config.toml is not a table"))
+    doc[key]
+        .as_table_mut()
+        .with_context(|| format!("`{key}` in config.toml is not a table"))
 }
 
 fn string_array(names: &[String]) -> Item {
@@ -458,7 +619,9 @@ fn string_array(names: &[String]) -> Item {
 /// Applies `change` to config.toml's text, keeping everything else as it is,
 /// and checks the result still loads. Returns the new text and a message.
 pub fn apply_in(text: &str, change: &Change) -> Result<(String, String)> {
-    let mut doc = text.parse::<DocumentMut>().context("config.toml does not parse")?;
+    let mut doc = text
+        .parse::<DocumentMut>()
+        .context("config.toml does not parse")?;
     let current: Config = toml::from_str(text).context("config.toml does not parse")?;
     let message = match change {
         Change::Add { name, entry } => {
@@ -469,7 +632,11 @@ pub fn apply_in(text: &str, change: &Change) -> Result<(String, String)> {
             let profiles = table(&mut doc, "profiles")?;
             let mut t = Table::new();
             t["agent"] = toml_edit::value(&entry.agent);
-            for (key, value) in [("model", &entry.model), ("effort", &entry.effort), ("description", &entry.description)] {
+            for (key, value) in [
+                ("model", &entry.model),
+                ("effort", &entry.effort),
+                ("description", &entry.description),
+            ] {
                 if !value.is_empty() {
                     t[key] = toml_edit::value(value);
                 }
@@ -478,11 +645,32 @@ pub fn apply_in(text: &str, change: &Change) -> Result<(String, String)> {
                 t["args"] = string_array(&entry.args);
             }
             profiles[name] = Item::Table(t);
-            let replaces = if crate::agents::is_kind(name) { format!(" (it replaces the built-in `{name}`)") } else { String::new() };
-            format!("added profile `{name}`{replaces}: {}", Profile { name: name.clone(), entry: entry.clone(), builtin: false }.summary())
+            let replaces = if crate::agents::is_kind(name) {
+                format!(" (it replaces the built-in `{name}`)")
+            } else {
+                String::new()
+            };
+            format!(
+                "added profile `{name}`{replaces}: {}",
+                Profile {
+                    name: name.clone(),
+                    entry: entry.clone(),
+                    builtin: false
+                }
+                .summary()
+            )
         }
-        Change::Edit { name, agent, model, effort, description, args } => {
-            let mut entry = current.profiles.get(name).cloned().with_context(|| format!("there is no profile `{name}` in config.toml; `profile add` makes one"))?;
+        Change::Edit {
+            name,
+            agent,
+            model,
+            effort,
+            description,
+            args,
+        } => {
+            let mut entry = current.profiles.get(name).cloned().with_context(|| {
+                format!("there is no profile `{name}` in config.toml; `profile add` makes one")
+            })?;
             if let Some(agent) = agent {
                 if *agent != entry.agent && effort.is_none() && effort_values(agent).is_none() {
                     // Another harness: an effort it cannot take goes.
@@ -490,7 +678,11 @@ pub fn apply_in(text: &str, change: &Change) -> Result<(String, String)> {
                 }
                 entry.agent = agent.clone();
             }
-            for (field, value) in [(&mut entry.model, model), (&mut entry.effort, effort), (&mut entry.description, description)] {
+            for (field, value) in [
+                (&mut entry.model, model),
+                (&mut entry.effort, effort),
+                (&mut entry.description, description),
+            ] {
                 if let Some(value) = value {
                     *field = value.clone();
                 }
@@ -499,9 +691,15 @@ pub fn apply_in(text: &str, change: &Change) -> Result<(String, String)> {
                 entry.args = args.clone();
             }
             validate(name, &entry)?;
-            let t = doc["profiles"][name.as_str()].as_table_mut().with_context(|| format!("[profiles.{name}] is not a table"))?;
+            let t = doc["profiles"][name.as_str()]
+                .as_table_mut()
+                .with_context(|| format!("[profiles.{name}] is not a table"))?;
             t["agent"] = toml_edit::value(&entry.agent);
-            for (key, value) in [("model", &entry.model), ("effort", &entry.effort), ("description", &entry.description)] {
+            for (key, value) in [
+                ("model", &entry.model),
+                ("effort", &entry.effort),
+                ("description", &entry.description),
+            ] {
                 if value.is_empty() {
                     t.remove(key);
                 } else {
@@ -513,17 +711,40 @@ pub fn apply_in(text: &str, change: &Change) -> Result<(String, String)> {
             } else {
                 t["args"] = string_array(&entry.args);
             }
-            format!("changed profile `{name}`: {}", Profile { name: name.clone(), entry, builtin: false }.summary())
+            format!(
+                "changed profile `{name}`: {}",
+                Profile {
+                    name: name.clone(),
+                    entry,
+                    builtin: false
+                }
+                .summary()
+            )
         }
         Change::Remove { name } => {
             if !current.profiles.contains_key(name) {
-                bail!("there is no profile `{name}` in config.toml{}", if crate::agents::is_kind(name) { " (a built-in profile cannot be removed)" } else { "" });
+                bail!(
+                    "there is no profile `{name}` in config.toml{}",
+                    if crate::agents::is_kind(name) {
+                        " (a built-in profile cannot be removed)"
+                    } else {
+                        ""
+                    }
+                );
             }
             table(&mut doc, "profiles")?.remove(name);
-            let back = if crate::agents::is_kind(name) { format!("; the built-in `{name}` is back") } else { String::new() };
+            let back = if crate::agents::is_kind(name) {
+                format!("; the built-in `{name}` is back")
+            } else {
+                String::new()
+            };
             format!("removed profile `{name}`{back}")
         }
-        Change::Allow { role, project, names } => {
+        Change::Allow {
+            role,
+            project,
+            names,
+        } => {
             if let Some(names) = names {
                 for n in names {
                     validate_name(n)?;
@@ -533,18 +754,34 @@ pub fn apply_in(text: &str, change: &Change) -> Result<(String, String)> {
                 }
             }
             let (key, scope) = match project {
-                Some(dir) => (dir.to_string_lossy().into_owned(), format!("in {}", dir.display())),
-                None => (crate::safety::DEFAULT_TABLE.to_string(), "in every project without its own list".to_string()),
+                Some(dir) => (
+                    dir.to_string_lossy().into_owned(),
+                    format!("in {}", dir.display()),
+                ),
+                None => (
+                    crate::safety::DEFAULT_TABLE.to_string(),
+                    "in every project without its own list".to_string(),
+                ),
             };
             let safety = table(&mut doc, "safety")?;
             if safety.get(&key).is_none() {
                 safety[&key] = Item::Table(Table::new());
             }
-            let t = safety[&key].as_table_mut().context("the [safety] entry is not a table")?;
+            let t = safety[&key]
+                .as_table_mut()
+                .context("the [safety] entry is not a table")?;
             match names {
                 Some(names) => {
                     t[role.list_key()] = string_array(names);
-                    format!("{} may use {} {scope}", role.word(), if names.is_empty() { "no profile".into() } else { names.join(", ") })
+                    format!(
+                        "{} may use {} {scope}",
+                        role.word(),
+                        if names.is_empty() {
+                            "no profile".into()
+                        } else {
+                            names.join(", ")
+                        }
+                    )
                 }
                 None => {
                     t.remove(role.list_key());
@@ -558,7 +795,10 @@ pub fn apply_in(text: &str, change: &Change) -> Result<(String, String)> {
                 bail!("there is no profile `{name}`");
             }
             table(&mut doc, "defaults")?[role.default_key()] = toml_edit::value(name);
-            format!("new projects start with {} = \"{name}\"", role.default_key())
+            format!(
+                "new projects start with {} = \"{name}\"",
+                role.default_key()
+            )
         }
     };
     let text = doc.to_string();
@@ -593,10 +833,17 @@ pub fn write_project_defaults(project: &Project, thread: &str, coordinator: &str
 /// `[defaults] thread_profile`. `~/` in arguments is this machine's home.
 pub fn resolve_json(ctx: &Ctx, name: Option<&str>) -> Result<String> {
     let config = load(&ctx.config_dir)?;
-    let name = name.map(str::to_string).unwrap_or_else(|| config.new_project_default(Role::Thread));
-    let profile = config.get(&name).with_context(|| format!("there is no profile `{name}` on this machine; `profile list` shows them"))?;
+    let name = name
+        .map(str::to_string)
+        .unwrap_or_else(|| config.new_project_default(Role::Thread));
+    let profile = config.get(&name).with_context(|| {
+        format!("there is no profile `{name}` on this machine; `profile list` shows them")
+    })?;
     let args = expand_home(&profile.args(), &ctx.env.home);
-    Ok(serde_json::json!({ "name": profile.name, "agent": profile.entry.agent, "args": args }).to_string())
+    Ok(
+        serde_json::json!({ "name": profile.name, "agent": profile.entry.agent, "args": args })
+            .to_string(),
+    )
 }
 
 /// `profile list [--project SLUG]`.
@@ -605,11 +852,30 @@ pub fn list_text(ctx: &Ctx, project: Option<&Project>) -> Result<String> {
     let config = load(&ctx.config_dir)?;
     let detected = detect(ctx.env);
     let mut out = String::new();
-    let _ = writeln!(out, "Profiles (built-ins: the agent CLIs installed and signed in here: {}):", if detected.is_empty() { "none found".to_string() } else { detected.join(", ") });
+    let _ = writeln!(
+        out,
+        "Profiles (built-ins: the agent CLIs installed and signed in here: {}):",
+        if detected.is_empty() {
+            "none found".to_string()
+        } else {
+            detected.join(", ")
+        }
+    );
     for p in config.listed(&detected) {
-        let _ = writeln!(out, "  {:<14} {}{}", p.name, p.summary(), if p.builtin { "  (built-in)" } else { "" });
+        let _ = writeln!(
+            out,
+            "  {:<14} {}{}",
+            p.name,
+            p.summary(),
+            if p.builtin { "  (built-in)" } else { "" }
+        );
     }
-    let _ = writeln!(out, "\nDefaults for new projects: thread_profile = {}, coordinator_profile = {}", config.new_project_default(Role::Thread), config.new_project_default(Role::Coordinator));
+    let _ = writeln!(
+        out,
+        "\nDefaults for new projects: thread_profile = {}, coordinator_profile = {}",
+        config.new_project_default(Role::Thread),
+        config.new_project_default(Role::Coordinator)
+    );
     if let Some(project) = project {
         let safety = project.safety(&ctx.config_dir)?;
         let (settings, _) = project.read_project_md()?;
@@ -619,14 +885,35 @@ pub fn list_text(ctx: &Ctx, project: Option<&Project>) -> Result<String> {
                 Role::Thread => &settings.thread_profile,
                 Role::Coordinator => &settings.coordinator_profile,
             };
-            let allowed = config.allowed(&safety, role).map(|l| if l.is_empty() { "none".to_string() } else { l.join(", ") }).unwrap_or_else(|| "every profile".into());
-            let _ = writeln!(out, "  {:<21} {default}\n  {:<21} {allowed}", role.default_key(), role.list_key());
+            let allowed = config
+                .allowed(&safety, role)
+                .map(|l| {
+                    if l.is_empty() {
+                        "none".to_string()
+                    } else {
+                        l.join(", ")
+                    }
+                })
+                .unwrap_or_else(|| "every profile".into());
+            let _ = writeln!(
+                out,
+                "  {:<21} {default}\n  {:<21} {allowed}",
+                role.default_key(),
+                role.list_key()
+            );
         }
     } else {
         for role in [Role::Thread, Role::Coordinator] {
             let global = project::load_safety(&ctx.config_dir, Path::new("")).unwrap_or_default();
-            let allowed = config.allowed(&global, role).map(|l| l.join(", ")).unwrap_or_else(|| "every profile".into());
-            let _ = writeln!(out, "Allowed for {} in projects without their own list: {allowed}", role.word());
+            let allowed = config
+                .allowed(&global, role)
+                .map(|l| l.join(", "))
+                .unwrap_or_else(|| "every profile".into());
+            let _ = writeln!(
+                out,
+                "Allowed for {} in projects without their own list: {allowed}",
+                role.word()
+            );
         }
     }
     Ok(out)
@@ -648,7 +935,15 @@ pub fn context_text(ctx: &Ctx, project: &Project, settings: &project::Settings) 
             Role::Coordinator => &settings.coordinator_profile,
         };
         let names = usable(&config, &safety, role, &detected, default);
-        let _ = writeln!(out, "{} (--profile NAME; default {default}):", if role == Role::Thread { "Thread profiles" } else { "Coordinator profiles" });
+        let _ = writeln!(
+            out,
+            "{} (--profile NAME; default {default}):",
+            if role == Role::Thread {
+                "Thread profiles"
+            } else {
+                "Coordinator profiles"
+            }
+        );
         if names.is_empty() {
             let _ = writeln!(out, "- (none allowed; ask the user)");
         }
@@ -662,10 +957,20 @@ pub fn context_text(ctx: &Ctx, project: &Project, settings: &project::Settings) 
 /// The profiles to offer `role` in a project: the listed ones it may use,
 /// plus its default when that is allowed but not listed (an uninstalled
 /// built-in, say).
-pub fn usable(config: &Config, safety: &project::Safety, role: Role, detected: &[String], default: &str) -> Vec<Profile> {
+pub fn usable(
+    config: &Config,
+    safety: &project::Safety,
+    role: Role,
+    detected: &[String],
+    default: &str,
+) -> Vec<Profile> {
     let allowed = config.allowed(safety, role);
     let ok = |name: &str| allowed.as_ref().is_none_or(|l| l.iter().any(|a| a == name));
-    let mut out: Vec<Profile> = config.listed(detected).into_iter().filter(|p| ok(&p.name)).collect();
+    let mut out: Vec<Profile> = config
+        .listed(detected)
+        .into_iter()
+        .filter(|p| ok(&p.name))
+        .collect();
     if let Some(list) = &allowed {
         for name in list {
             if !out.iter().any(|p| &p.name == name)
@@ -702,27 +1007,56 @@ mod tests {
     }
 
     fn settings(thread: &str) -> project::Settings {
-        project::Settings { thread_profile: thread.into(), ..project::Settings::default() }
+        project::Settings {
+            thread_profile: thread.into(),
+            ..project::Settings::default()
+        }
     }
 
     #[test]
     fn profiles_resolve_to_their_harness_flags() {
         let config: Config = toml::from_str(CONFIG).unwrap();
         let deep = config.get("deep").unwrap();
-        assert_eq!(deep.args(), strings(&["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"high\""]));
-        assert_eq!(config.get("luna").unwrap().args(), strings(&["--config", "~/.omp/agent/luna.yml"]));
+        assert_eq!(
+            deep.args(),
+            strings(&[
+                "--model",
+                "gpt-5.5",
+                "-c",
+                "model_reasoning_effort=\"high\""
+            ])
+        );
+        assert_eq!(
+            config.get("luna").unwrap().args(),
+            strings(&["--config", "~/.omp/agent/luna.yml"])
+        );
         // The user's `claude` replaces the built-in; `codex` stays built-in.
         let claude = config.get("claude").unwrap();
         assert!(!claude.builtin && claude.args() == ["--dangerously-skip-permissions"]);
         let codex = config.get("codex").unwrap();
         assert!(codex.builtin && codex.args().is_empty() && codex.agent() == "codex");
         assert_eq!(config.get("gpt"), None);
-        assert_eq!(typed_args("claude", "opus", "xhigh").unwrap(), strings(&["--model", "opus", "--effort", "xhigh"]));
-        assert_eq!(typed_args("omp", "", "low").unwrap(), strings(&["--thinking", "low"]));
-        assert!(typed_args("gemini", "", "high").is_err(), "no known effort flag");
+        assert_eq!(
+            typed_args("claude", "opus", "xhigh").unwrap(),
+            strings(&["--model", "opus", "--effort", "xhigh"])
+        );
+        assert_eq!(
+            typed_args("omp", "", "low").unwrap(),
+            strings(&["--thinking", "low"])
+        );
+        assert!(
+            typed_args("gemini", "", "high").is_err(),
+            "no known effort flag"
+        );
         assert!(typed_args("claude", "", "ultra").is_err());
         assert!(typed_args("claude", "--yolo", "").is_err());
-        assert_eq!(expand_home(&strings(&["--config", "~/a.yml", "--x=~/b", "~x"]), Path::new("/h")), strings(&["--config", "/h/a.yml", "--x=/h/b", "~x"]));
+        assert_eq!(
+            expand_home(
+                &strings(&["--config", "~/a.yml", "--x=~/b", "~x"]),
+                Path::new("/h")
+            ),
+            strings(&["--config", "/h/a.yml", "--x=/h/b", "~x"])
+        );
     }
 
     #[test]
@@ -730,13 +1064,28 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let env = crate::paths::Env::for_test(home.path(), &[]);
         let runner = crate::runner::fake::FakeRunner::new();
-        let ctx = Ctx { env: &env, root: home.path().join("root"), config_dir: home.path().join("cfg"), runner: &runner, detached_ticker: false };
+        let ctx = Ctx {
+            env: &env,
+            root: home.path().join("root"),
+            config_dir: home.path().join("cfg"),
+            runner: &runner,
+            detached_ticker: false,
+        };
         std::fs::create_dir_all(&ctx.config_dir).unwrap();
-        std::fs::write(ctx.config_dir.join("config.toml"), format!("{CONFIG}\n[defaults]\nthread_profile = \"deep\"\n")).unwrap();
-        let luna: serde_json::Value = serde_json::from_str(&resolve_json(&ctx, Some("luna")).unwrap()).unwrap();
+        std::fs::write(
+            ctx.config_dir.join("config.toml"),
+            format!("{CONFIG}\n[defaults]\nthread_profile = \"deep\"\n"),
+        )
+        .unwrap();
+        let luna: serde_json::Value =
+            serde_json::from_str(&resolve_json(&ctx, Some("luna")).unwrap()).unwrap();
         let expected = format!("{}/.omp/agent/luna.yml", home.path().display());
-        assert_eq!(luna, serde_json::json!({ "name": "luna", "agent": "omp", "args": ["--config", expected] }));
-        let default: serde_json::Value = serde_json::from_str(&resolve_json(&ctx, None).unwrap()).unwrap();
+        assert_eq!(
+            luna,
+            serde_json::json!({ "name": "luna", "agent": "omp", "args": ["--config", expected] })
+        );
+        let default: serde_json::Value =
+            serde_json::from_str(&resolve_json(&ctx, None).unwrap()).unwrap();
         assert_eq!(default["name"], "deep");
         assert_eq!(default["args"][0], "--model");
         assert!(resolve_json(&ctx, Some("nope")).is_err());
@@ -748,42 +1097,145 @@ mod tests {
         let own = safety_of(CONFIG, "/p/demo");
         let none = safety_of(CONFIG, "/p/other");
         // The project's own list beats [safety.default].
-        assert_eq!(resolve(&config, &own, &settings("luna"), Role::Thread, None, "demo").unwrap().name, "luna");
-        let error = resolve(&config, &own, &settings("luna"), Role::Thread, Some("deep"), "demo").unwrap_err().to_string();
-        assert!(error.contains("not allowed for threads in `demo`") && error.contains("allowed: luna"), "{error}");
+        assert_eq!(
+            resolve(&config, &own, &settings("luna"), Role::Thread, None, "demo")
+                .unwrap()
+                .name,
+            "luna"
+        );
+        let error = resolve(
+            &config,
+            &own,
+            &settings("luna"),
+            Role::Thread,
+            Some("deep"),
+            "demo",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("not allowed for threads in `demo`") && error.contains("allowed: luna"),
+            "{error}"
+        );
         // A default that the list does not name is refused too.
-        assert!(resolve(&config, &own, &settings("claude"), Role::Thread, None, "demo").is_err());
+        assert!(
+            resolve(
+                &config,
+                &own,
+                &settings("claude"),
+                Role::Thread,
+                None,
+                "demo"
+            )
+            .is_err()
+        );
         // [safety.default] applies without a project list.
-        assert_eq!(resolve(&config, &none, &settings("claude"), Role::Thread, Some("deep"), "x").unwrap().name, "deep");
-        assert!(resolve(&config, &none, &settings("claude"), Role::Thread, Some("gemini"), "x").is_err());
+        assert_eq!(
+            resolve(
+                &config,
+                &none,
+                &settings("claude"),
+                Role::Thread,
+                Some("deep"),
+                "x"
+            )
+            .unwrap()
+            .name,
+            "deep"
+        );
+        assert!(
+            resolve(
+                &config,
+                &none,
+                &settings("claude"),
+                Role::Thread,
+                Some("gemini"),
+                "x"
+            )
+            .is_err()
+        );
         // No list for the coordinator: any profile, built-ins included.
         assert_eq!(none.coordinator_profiles, None);
-        assert_eq!(resolve(&config, &none, &settings("claude"), Role::Coordinator, Some("gemini"), "x").unwrap().agent(), "gemini");
-        assert!(resolve(&config, &none, &settings("claude"), Role::Coordinator, Some("nope"), "x").unwrap_err().to_string().contains("no profile `nope`"));
+        assert_eq!(
+            resolve(
+                &config,
+                &none,
+                &settings("claude"),
+                Role::Coordinator,
+                Some("gemini"),
+                "x"
+            )
+            .unwrap()
+            .agent(),
+            "gemini"
+        );
+        assert!(
+            resolve(
+                &config,
+                &none,
+                &settings("claude"),
+                Role::Coordinator,
+                Some("nope"),
+                "x"
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("no profile `nope`")
+        );
         // An empty list allows nothing.
-        let empty = project::Safety { coordinator_profiles: Some(vec![]), ..project::Safety::default() };
-        assert!(resolve(&config, &empty, &settings("claude"), Role::Coordinator, None, "x").unwrap_err().to_string().contains("allowed: none"));
+        let empty = project::Safety {
+            coordinator_profiles: Some(vec![]),
+            ..project::Safety::default()
+        };
+        assert!(
+            resolve(
+                &config,
+                &empty,
+                &settings("claude"),
+                Role::Coordinator,
+                None,
+                "x"
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("allowed: none")
+        );
     }
 
     #[test]
     fn old_settings_keep_working_and_legacy_args_follow_their_harness() {
         // No profiles at all: every kind is a built-in, everything allowed.
         let config = Config::default();
-        let safety = project::Safety { thread_agent_args: strings(&["--dangerously-skip-permissions"]), ..project::Safety::default() };
+        let safety = project::Safety {
+            thread_agent_args: strings(&["--dangerously-skip-permissions"]),
+            ..project::Safety::default()
+        };
         let old = settings("claude");
         let claude = resolve(&config, &safety, &old, Role::Thread, None, "x").unwrap();
         let legacy = legacy_agent(&config, &old, Role::Thread);
-        assert_eq!(launch_args(&claude, &safety.thread_agent_args, &legacy), strings(&["--dangerously-skip-permissions"]));
+        assert_eq!(
+            launch_args(&claude, &safety.thread_agent_args, &legacy),
+            strings(&["--dangerously-skip-permissions"])
+        );
         // Issue #45: a Codex thread no longer gets Claude's flag.
         let codex = resolve(&config, &safety, &old, Role::Thread, Some("codex"), "x").unwrap();
         assert!(launch_args(&codex, &safety.thread_agent_args, &legacy).is_empty());
         // A user profile carries its own arguments only.
         let config: Config = toml::from_str(CONFIG).unwrap();
         let luna = config.get("luna").unwrap();
-        assert_eq!(launch_args(&luna, &safety.thread_agent_args, "omp"), strings(&["--config", "~/.omp/agent/luna.yml"]));
+        assert_eq!(
+            launch_args(&luna, &safety.thread_agent_args, "omp"),
+            strings(&["--config", "~/.omp/agent/luna.yml"])
+        );
         // PROJECT.md's old keys read as the default profiles.
-        let (s, _) = project::parse_project_md("+++\nthread_agent = \"codex\"\ncoordinator_agent = \"gemini\"\n+++\n").unwrap();
-        assert_eq!((s.thread_profile.as_str(), s.coordinator_profile.as_str()), ("codex", "gemini"));
+        let (s, _) = project::parse_project_md(
+            "+++\nthread_agent = \"codex\"\ncoordinator_agent = \"gemini\"\n+++\n",
+        )
+        .unwrap();
+        assert_eq!(
+            (s.thread_profile.as_str(), s.coordinator_profile.as_str()),
+            ("codex", "gemini")
+        );
     }
 
     #[test]
@@ -794,7 +1246,11 @@ mod tests {
         let bin = home.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         for name in ["claude", "codex", "cursor-agent", "omp", "gemini"] {
-            let path = bin.join(if cfg!(windows) { format!("{name}.exe") } else { name.to_string() });
+            let path = bin.join(if cfg!(windows) {
+                format!("{name}.exe")
+            } else {
+                name.to_string()
+            });
             std::fs::write(&path, "#!/bin/sh\n").unwrap();
             #[cfg(unix)]
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -810,8 +1266,15 @@ mod tests {
         // gemini is installed but not signed in; pi is not executable.
         assert_eq!(detect(&env), strings(&["claude", "codex", "cursor", "omp"]));
         let config: Config = toml::from_str(CONFIG).unwrap();
-        let names: Vec<String> = config.listed(&detect(&env)).into_iter().map(|p| p.name).collect();
-        assert_eq!(names, strings(&["claude", "deep", "luna", "codex", "cursor", "omp"]));
+        let names: Vec<String> = config
+            .listed(&detect(&env))
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(
+            names,
+            strings(&["claude", "deep", "luna", "codex", "cursor", "omp"])
+        );
     }
 
     #[cfg(windows)]
@@ -825,49 +1288,193 @@ mod tests {
         std::fs::write(first.join("agent.cmd"), "").unwrap();
         std::fs::write(second.join("agent.exe"), "").unwrap();
         std::fs::write(first.join("agent"), "not a Windows executable").unwrap();
-        let path = std::env::join_paths([&first, &second]).unwrap().to_string_lossy().into_owned();
+        let path = std::env::join_paths([&first, &second])
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         let env = Env::for_test(home.path(), &[("PATH", &path), ("PATHEXT", ".EXE;.CMD")]);
-        assert_eq!(crate::paths::canonicalize(&find_executable(&env, "agent").unwrap()).unwrap(), crate::paths::canonicalize(&first.join("agent.cmd")).unwrap());
-        assert_eq!(crate::paths::canonicalize(&find_executable(&env, "agent.exe").unwrap()).unwrap(), crate::paths::canonicalize(&second.join("agent.exe")).unwrap());
+        assert_eq!(
+            crate::paths::canonicalize(find_executable(&env, "agent").unwrap()).unwrap(),
+            crate::paths::canonicalize(first.join("agent.cmd")).unwrap()
+        );
+        assert_eq!(
+            crate::paths::canonicalize(find_executable(&env, "agent.exe").unwrap()).unwrap(),
+            crate::paths::canonicalize(second.join("agent.exe")).unwrap()
+        );
         let env = Env::for_test(home.path(), &[("PATH", &path), ("PATHEXT", ".EXE")]);
-        assert_eq!(crate::paths::canonicalize(&find_executable(&env, "agent").unwrap()).unwrap(), crate::paths::canonicalize(&second.join("agent.exe")).unwrap());
+        assert_eq!(
+            crate::paths::canonicalize(find_executable(&env, "agent").unwrap()).unwrap(),
+            crate::paths::canonicalize(second.join("agent.exe")).unwrap()
+        );
         assert!(find_executable(&env, "missing").is_none());
     }
 
     #[test]
     fn changes_edit_config_toml_in_place() {
-        let luna = Entry { agent: "omp".into(), args: strings(&["--config", "~/.omp/agent/sol.yml"]), ..Entry::default() };
-        let (text, _) = apply_in(CONFIG, &Change::Add { name: "sol".into(), entry: luna.clone() }).unwrap();
-        assert!(text.starts_with("root = \"~/p\" # mine\n"), "the rest stays: {text}");
+        let luna = Entry {
+            agent: "omp".into(),
+            args: strings(&["--config", "~/.omp/agent/sol.yml"]),
+            ..Entry::default()
+        };
+        let (text, _) = apply_in(
+            CONFIG,
+            &Change::Add {
+                name: "sol".into(),
+                entry: luna.clone(),
+            },
+        )
+        .unwrap();
+        assert!(
+            text.starts_with("root = \"~/p\" # mine\n"),
+            "the rest stays: {text}"
+        );
         let config: Config = toml::from_str(&text).unwrap();
         assert_eq!(config.profiles["sol"], luna);
-        assert!(apply_in(&text, &Change::Add { name: "sol".into(), entry: luna.clone() }).is_err(), "already exists");
-        assert!(apply_in("", &Change::Add { name: "x".into(), entry: Entry { agent: "gpt".into(), ..Entry::default() } }).is_err());
-        assert!(apply_in("", &Change::Add { name: "bad name".into(), entry: luna.clone() }).is_err());
+        assert!(
+            apply_in(
+                &text,
+                &Change::Add {
+                    name: "sol".into(),
+                    entry: luna.clone()
+                }
+            )
+            .is_err(),
+            "already exists"
+        );
+        assert!(
+            apply_in(
+                "",
+                &Change::Add {
+                    name: "x".into(),
+                    entry: Entry {
+                        agent: "gpt".into(),
+                        ..Entry::default()
+                    }
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            apply_in(
+                "",
+                &Change::Add {
+                    name: "bad name".into(),
+                    entry: luna.clone()
+                }
+            )
+            .is_err()
+        );
 
-        let edit = Change::Edit { name: "deep".into(), agent: None, model: Some(String::new()), effort: Some("xhigh".into()), description: None, args: Some(strings(&["--search"])) };
+        let edit = Change::Edit {
+            name: "deep".into(),
+            agent: None,
+            model: Some(String::new()),
+            effort: Some("xhigh".into()),
+            description: None,
+            args: Some(strings(&["--search"])),
+        };
         let (text, _) = apply_in(&text, &edit).unwrap();
         let deep = toml::from_str::<Config>(&text).unwrap().profiles["deep"].clone();
-        assert_eq!((deep.model.as_str(), deep.effort.as_str(), deep.args.clone()), ("", "xhigh", strings(&["--search"])));
+        assert_eq!(
+            (deep.model.as_str(), deep.effort.as_str(), deep.args.clone()),
+            ("", "xhigh", strings(&["--search"]))
+        );
         // Switching harness drops an effort the new one cannot take.
-        let (text, _) = apply_in(&text, &Change::Edit { name: "deep".into(), agent: Some("gemini".into()), model: None, effort: None, description: None, args: None }).unwrap();
-        assert_eq!(toml::from_str::<Config>(&text).unwrap().profiles["deep"].effort, "");
+        let (text, _) = apply_in(
+            &text,
+            &Change::Edit {
+                name: "deep".into(),
+                agent: Some("gemini".into()),
+                model: None,
+                effort: None,
+                description: None,
+                args: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            toml::from_str::<Config>(&text).unwrap().profiles["deep"].effort,
+            ""
+        );
 
-        let allow = Change::Allow { role: Role::Coordinator, project: Some("/p/demo".into()), names: Some(strings(&["claude"])) };
+        let allow = Change::Allow {
+            role: Role::Coordinator,
+            project: Some("/p/demo".into()),
+            names: Some(strings(&["claude"])),
+        };
         let (text, _) = apply_in(&text, &allow).unwrap();
         assert!(text.contains("[safety.\"/p/demo\"]\nthread_profiles = [\"luna\"]\ncoordinator_profiles = [\"claude\"]"), "{text}");
-        assert!(apply_in(&text, &Change::Allow { role: Role::Thread, project: None, names: Some(strings(&["nope"])) }).is_err());
-        let (text, _) = apply_in(&text, &Change::Allow { role: Role::Thread, project: None, names: None }).unwrap();
+        assert!(
+            apply_in(
+                &text,
+                &Change::Allow {
+                    role: Role::Thread,
+                    project: None,
+                    names: Some(strings(&["nope"]))
+                }
+            )
+            .is_err()
+        );
+        let (text, _) = apply_in(
+            &text,
+            &Change::Allow {
+                role: Role::Thread,
+                project: None,
+                names: None,
+            },
+        )
+        .unwrap();
         assert_eq!(safety_of(&text, "/p/other").thread_profiles, None);
-        let (text, _) = apply_in(&text, &Change::Allow { role: Role::Coordinator, project: None, names: Some(strings(&["luna"])) }).unwrap();
-        assert!(text.contains("[safety.default]\ncoordinator_profiles = [\"luna\"]"), "{text}");
-        assert_eq!(safety_of(&text, "/p/demo").coordinator_profiles, Some(strings(&["claude"])), "the project's own list still wins");
-        let (text, _) = apply_in(&text, &Change::Default { role: Role::Thread, name: "luna".into() }).unwrap();
-        assert_eq!(toml::from_str::<Config>(&text).unwrap().new_project_default(Role::Thread), "luna");
+        let (text, _) = apply_in(
+            &text,
+            &Change::Allow {
+                role: Role::Coordinator,
+                project: None,
+                names: Some(strings(&["luna"])),
+            },
+        )
+        .unwrap();
+        assert!(
+            text.contains("[safety.default]\ncoordinator_profiles = [\"luna\"]"),
+            "{text}"
+        );
+        assert_eq!(
+            safety_of(&text, "/p/demo").coordinator_profiles,
+            Some(strings(&["claude"])),
+            "the project's own list still wins"
+        );
+        let (text, _) = apply_in(
+            &text,
+            &Change::Default {
+                role: Role::Thread,
+                name: "luna".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            toml::from_str::<Config>(&text)
+                .unwrap()
+                .new_project_default(Role::Thread),
+            "luna"
+        );
 
-        let (text, message) = apply_in(&text, &Change::Remove { name: "claude".into() }).unwrap();
+        let (text, message) = apply_in(
+            &text,
+            &Change::Remove {
+                name: "claude".into(),
+            },
+        )
+        .unwrap();
         assert!(message.contains("built-in `claude` is back"));
-        assert!(apply_in(&text, &Change::Remove { name: "claude".into() }).is_err());
+        assert!(
+            apply_in(
+                &text,
+                &Change::Remove {
+                    name: "claude".into()
+                }
+            )
+            .is_err()
+        );
         // The safety table still loads with its new keys.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("config.toml"), &text).unwrap();

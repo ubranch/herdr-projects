@@ -45,7 +45,10 @@ struct ActionContext {
 }
 
 fn action_context(ctx: &Ctx) -> ActionContext {
-    ctx.env.var("HERDR_PLUGIN_CONTEXT_JSON").and_then(|json| serde_json::from_str(json).ok()).unwrap_or_default()
+    ctx.env
+        .var("HERDR_PLUGIN_CONTEXT_JSON")
+        .and_then(|json| serde_json::from_str(json).ok())
+        .unwrap_or_default()
 }
 
 fn state_file(ctx: &Ctx) -> Result<PathBuf> {
@@ -54,7 +57,10 @@ fn state_file(ctx: &Ctx) -> Result<PathBuf> {
 }
 
 fn socket(ctx: &Ctx) -> Result<String> {
-    ctx.env.var("HERDR_SOCKET_PATH").map(str::to_string).context("HERDR_SOCKET_PATH is not set: this command is meant to be run by herdr")
+    ctx.env
+        .var("HERDR_SOCKET_PATH")
+        .map(str::to_string)
+        .context("HERDR_SOCKET_PATH is not set: this command is meant to be run by herdr")
 }
 
 fn open_pane(ctx: &Ctx, entrypoint: &str, handoff: &Handoff) -> Result<()> {
@@ -64,52 +70,123 @@ fn open_pane(ctx: &Ctx, entrypoint: &str, handoff: &Handoff) -> Result<()> {
     }
     project::write_json(&file, handoff)?;
     let herdr = Herdr::new(ctx.env.herdr_bin(), socket(ctx)?, ctx.runner);
-    herdr.call(&["plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", entrypoint], CALL_TIMEOUT).map_err(|e| anyhow::anyhow!("{e}"))?;
+    herdr
+        .call(
+            &[
+                "plugin",
+                "pane",
+                "open",
+                "--plugin",
+                PLUGIN_ID,
+                "--entrypoint",
+                entrypoint,
+            ],
+            CALL_TIMEOUT,
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(())
 }
 
 fn read_handoff(ctx: &Ctx) -> Handoff {
-    state_file(ctx).ok().and_then(|file| project::read_json(&file)).unwrap_or_default()
+    state_file(ctx)
+        .ok()
+        .and_then(|file| project::read_json(&file))
+        .unwrap_or_default()
 }
 
 /// The project of the workspace the action was invoked from, if any.
 fn current_slug(ctx: &Ctx) -> Option<String> {
     let context = action_context(ctx);
-    let workspace = ctx.env.var("HERDR_WORKSPACE_ID").map(str::to_string).unwrap_or(context.workspace_id);
-    overview::project_for_workspace(ctx, &workspace, ctx.env.var("HERDR_SOCKET_PATH").unwrap_or(""))
+    let workspace = ctx
+        .env
+        .var("HERDR_WORKSPACE_ID")
+        .map(str::to_string)
+        .unwrap_or(context.workspace_id);
+    overview::project_for_workspace(
+        ctx,
+        &workspace,
+        ctx.env.var("HERDR_SOCKET_PATH").unwrap_or(""),
+    )
 }
 
 pub fn run_action(ctx: &Ctx, id: &str) -> Result<()> {
     let context = action_context(ctx);
-    let base = Handoff { socket: socket(ctx).unwrap_or_default(), ..Handoff::default() };
+    let base = Handoff {
+        socket: socket(ctx).unwrap_or_default(),
+        ..Handoff::default()
+    };
     match id {
         "new" => open_pane(ctx, "new", &base),
         "open-popup" | "overview" => {
             let context = action_context(ctx);
-            let workspace = ctx.env.var("HERDR_WORKSPACE_ID").map(str::to_string).unwrap_or(context.workspace_id);
-            open_pane(ctx, "projects", &Handoff { slug: current_slug(ctx).unwrap_or_default(), workspace_id: workspace, ..base })
+            let workspace = ctx
+                .env
+                .var("HERDR_WORKSPACE_ID")
+                .map(str::to_string)
+                .unwrap_or(context.workspace_id);
+            open_pane(
+                ctx,
+                "projects",
+                &Handoff {
+                    slug: current_slug(ctx).unwrap_or_default(),
+                    workspace_id: workspace,
+                    ..base
+                },
+            )
         }
         "open" | "pause" | "resume" => match current_slug(ctx) {
             Some(slug) => run_on_slug(ctx, id, &slug),
-            None => open_pane(ctx, "pick", &Handoff { command: id.to_string(), ..base }),
+            None => open_pane(
+                ctx,
+                "pick",
+                &Handoff {
+                    command: id.to_string(),
+                    ..base
+                },
+            ),
         },
         "focus" => match current_slug(ctx) {
             Some(slug) => overview::focus(ctx, Some(&slug)),
-            None => bail!("this workspace does not belong to a project; run `focus <slug>` from a terminal"),
+            None => bail!(
+                "this workspace does not belong to a project; run `focus <slug>` from a terminal"
+            ),
         },
         "unfocus" => overview::unfocus(ctx, &SessionFlags::default()),
         "adopt-workspace" => {
             // The originating pane is captured here, before any popup opens.
-            let pane = ctx.env.var("HERDR_PANE_ID").map(str::to_string).unwrap_or(context.focused_pane_id);
+            let pane = ctx
+                .env
+                .var("HERDR_PANE_ID")
+                .map(str::to_string)
+                .unwrap_or(context.focused_pane_id);
             if pane.is_empty() {
                 bail!("herdr did not say which pane this action was invoked from");
             }
             let herdr = Herdr::new(ctx.env.herdr_bin(), socket(ctx)?, ctx.runner);
             adopt::adoptable_agent(ctx, &herdr, &socket(ctx)?, &pane)?;
-            open_pane(ctx, "adopt", &Handoff { pane_id: pane, workspace_label: context.workspace_label, workspace_cwd: context.workspace_cwd, ..base })
+            open_pane(
+                ctx,
+                "adopt",
+                &Handoff {
+                    pane_id: pane,
+                    workspace_label: context.workspace_label,
+                    workspace_cwd: context.workspace_cwd,
+                    ..base
+                },
+            )
         }
         "configure" => {
-            let options = crate::setup::ConfigureOptions { clients: vec![], claude_home: None, codex_home: None, dry_run: false, hooks: true, sidebar: true, key: None, herdr_config: None, skill: crate::setup::skill_source() };
+            let options = crate::setup::ConfigureOptions {
+                clients: vec![],
+                claude_home: None,
+                codex_home: None,
+                dry_run: false,
+                hooks: true,
+                sidebar: true,
+                key: None,
+                herdr_config: None,
+                skill: crate::setup::skill_source(),
+            };
             let herdr = Herdr::new(ctx.env.herdr_bin(), socket(ctx)?, ctx.runner);
             match crate::setup::configure(ctx, &options) {
                 Ok(notes) => {
@@ -120,7 +197,8 @@ pub fn run_action(ctx: &Ctx, id: &str) -> Result<()> {
                     let _ = herdr.notification_show("Projects configured", "Sidebar rows, popup key, progress hooks and the autoproject skill are set. Run `reload config` if the rows are not visible yet.");
                 }
                 Err(error) => {
-                    let _ = herdr.notification_show("Projects: configure failed", &format!("{error:#}"));
+                    let _ = herdr
+                        .notification_show("Projects: configure failed", &format!("{error:#}"));
                     return Err(error);
                 }
             }
@@ -129,7 +207,11 @@ pub fn run_action(ctx: &Ctx, id: &str) -> Result<()> {
         "doctor" => {
             let healthy = doctor::run(ctx, &SessionFlags::default(), false)?;
             let herdr = Herdr::new(ctx.env.herdr_bin(), socket(ctx)?, ctx.runner);
-            let body = if healthy { "All required checks passed. Details: herdr plugin log --plugin herdr-projects" } else { "Some checks FAILED. Details: herdr plugin log --plugin herdr-projects" };
+            let body = if healthy {
+                "All required checks passed. Details: herdr plugin log --plugin herdr-projects"
+            } else {
+                "Some checks FAILED. Details: herdr plugin log --plugin herdr-projects"
+            };
             let _ = herdr.notification_show("herdr-projects doctor", body);
             Ok(())
         }
@@ -139,7 +221,20 @@ pub fn run_action(ctx: &Ctx, id: &str) -> Result<()> {
 
 fn run_on_slug(ctx: &Ctx, command: &str, slug: &str) -> Result<()> {
     match command {
-        "open" => coordinator::open(ctx, slug, &OpenOptions { session: SessionFlags { session: None, socket: Some(PathBuf::from(socket(ctx)?)) }, rebind: false, profile: None, new: false, here: false }),
+        "open" => coordinator::open(
+            ctx,
+            slug,
+            &OpenOptions {
+                session: SessionFlags {
+                    session: None,
+                    socket: Some(PathBuf::from(socket(ctx)?)),
+                },
+                rebind: false,
+                profile: None,
+                new: false,
+                here: false,
+            },
+        ),
         "pause" => lifecycle::set_status(ctx, slug, Status::Paused),
         "resume" => lifecycle::set_status(ctx, slug, Status::Active),
         other => bail!("`{other}` cannot be run from the picker"),
@@ -156,7 +251,11 @@ fn ask(question: &str, default: &str) -> Result<String> {
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line)?;
     let answer = line.trim();
-    Ok(if answer.is_empty() { default.to_string() } else { answer.to_string() })
+    Ok(if answer.is_empty() {
+        default.to_string()
+    } else {
+        answer.to_string()
+    })
 }
 
 fn hold_open() {
@@ -168,8 +267,20 @@ fn hold_open() {
 pub fn run_pane(ctx: &Ctx, id: &str) -> Result<()> {
     let handoff = read_handoff(ctx);
     let result = match id {
-        "projects" => return crate::popup::run(ctx, Some(handoff.slug.clone()).filter(|s| !s.is_empty()), handoff.workspace_id.clone()),
-        "overview" => return overview::run(ctx, Some(handoff.slug.as_str()).filter(|s| !s.is_empty()), true),
+        "projects" => {
+            return crate::popup::run(
+                ctx,
+                Some(handoff.slug.clone()).filter(|s| !s.is_empty()),
+                handoff.workspace_id.clone(),
+            );
+        }
+        "overview" => {
+            return overview::run(
+                ctx,
+                Some(handoff.slug.as_str()).filter(|s| !s.is_empty()),
+                true,
+            );
+        }
         "new" => (|| {
             println!("New project\n");
             let name = ask("Name", "")?;
@@ -194,7 +305,16 @@ pub fn run_pane(ctx: &Ctx, id: &str) -> Result<()> {
             }
             adopt::adopt_workspace(
                 ctx,
-                &AdoptWorkspace { name, goal: String::new(), pane: handoff.pane_id.clone(), workspace_cwd: handoff.workspace_cwd.clone(), session: SessionFlags { session: None, socket: Some(PathBuf::from(socket(ctx)?)) } },
+                &AdoptWorkspace {
+                    name,
+                    goal: String::new(),
+                    pane: handoff.pane_id.clone(),
+                    workspace_cwd: handoff.workspace_cwd.clone(),
+                    session: SessionFlags {
+                        session: None,
+                        socket: Some(PathBuf::from(socket(ctx)?)),
+                    },
+                },
             )
         })(),
         other => bail!("unknown pane `{other}`"),
@@ -216,7 +336,13 @@ mod tests {
     fn plugin_env(world: &World, extra: &[(&str, &str)]) -> Env {
         let state = world.home.path().join("state");
         let socket = world.home.path().join("a.sock");
-        let mut vars = vec![("HERDR_PLUGIN_STATE_DIR", state.to_str().unwrap().to_string()), ("HERDR_SOCKET_PATH", socket.to_str().unwrap().to_string())];
+        let mut vars = vec![
+            (
+                "HERDR_PLUGIN_STATE_DIR",
+                state.to_str().unwrap().to_string(),
+            ),
+            ("HERDR_SOCKET_PATH", socket.to_str().unwrap().to_string()),
+        ];
         vars.extend(extra.iter().map(|(k, v)| (*k, v.to_string())));
         let refs: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
         Env::for_test(world.home.path(), &refs)
@@ -226,13 +352,25 @@ mod tests {
     fn an_action_without_a_project_opens_the_picker_with_the_requested_command() {
         let world = World::new();
         world.project("demo", "a.sock");
-        world.runner.on("plugin pane open", ok(r#"{"result":{"type":"ok"}}"#));
+        world
+            .runner
+            .on("plugin pane open", ok(r#"{"result":{"type":"ok"}}"#));
         let env = plugin_env(&world, &[("HERDR_WORKSPACE_ID", "w42")]);
-        let ctx = Ctx { env: &env, ..world.ctx() };
+        let ctx = Ctx {
+            env: &env,
+            ..world.ctx()
+        };
         run_action(&ctx, "pause").unwrap();
         let calls = world.runner.calls.borrow();
-        let opened = calls.iter().find(|c| c.display().contains("plugin pane open")).unwrap();
-        assert!(opened.display().contains("--plugin herdr-projects --entrypoint pick"));
+        let opened = calls
+            .iter()
+            .find(|c| c.display().contains("plugin pane open"))
+            .unwrap();
+        assert!(
+            opened
+                .display()
+                .contains("--plugin herdr-projects --entrypoint pick")
+        );
         drop(calls);
         assert_eq!(read_handoff(&ctx).command, "pause");
     }
@@ -242,7 +380,10 @@ mod tests {
         let world = World::new();
         let project = world.project("demo", "a.sock");
         let env = plugin_env(&world, &[("HERDR_WORKSPACE_ID", "w1")]);
-        let ctx = Ctx { env: &env, ..world.ctx() };
+        let ctx = Ctx {
+            env: &env,
+            ..world.ctx()
+        };
         run_action(&ctx, "pause").unwrap();
         assert_eq!(project.status(), Status::Paused);
         assert_eq!(world.runner.count("plugin pane open"), 0);
@@ -254,17 +395,39 @@ mod tests {
     fn the_popup_opens_scoped_to_the_focused_workspaces_project_and_on_all_projects_elsewhere() {
         let world = World::new();
         let project = world.project("demo", "a.sock");
-        world.runner.on("plugin pane open", ok(r#"{"result":{"type":"ok"}}"#));
+        world
+            .runner
+            .on("plugin pane open", ok(r#"{"result":{"type":"ok"}}"#));
         // The coordinator was reopened in w9; the record still says w1.
-        *world.panes.borrow_mut() = format!("[{}]", crate::scenarios::pane_json("w9", "w9:t1", "w9:p1", &project.canonical_dir().to_string_lossy()));
-        let inside = plugin_env(&world, &[("HERDR_WORKSPACE_ID", "w9"), ("HERDR_PANE_ID", "w9:p1")]);
-        let ctx = Ctx { env: &inside, ..world.ctx() };
+        *world.panes.borrow_mut() = format!(
+            "[{}]",
+            crate::scenarios::pane_json(
+                "w9",
+                "w9:t1",
+                "w9:p1",
+                &project.canonical_dir().to_string_lossy()
+            )
+        );
+        let inside = plugin_env(
+            &world,
+            &[("HERDR_WORKSPACE_ID", "w9"), ("HERDR_PANE_ID", "w9:p1")],
+        );
+        let ctx = Ctx {
+            env: &inside,
+            ..world.ctx()
+        };
         run_action(&ctx, "open-popup").unwrap();
         let handoff = read_handoff(&ctx);
-        assert_eq!((handoff.slug.as_str(), handoff.workspace_id.as_str()), ("demo", "w9"));
+        assert_eq!(
+            (handoff.slug.as_str(), handoff.workspace_id.as_str()),
+            ("demo", "w9")
+        );
 
         let outside = plugin_env(&world, &[("HERDR_WORKSPACE_ID", "w3")]);
-        let ctx = Ctx { env: &outside, ..world.ctx() };
+        let ctx = Ctx {
+            env: &outside,
+            ..world.ctx()
+        };
         run_action(&ctx, "open-popup").unwrap();
         assert_eq!(read_handoff(&ctx).slug, "");
     }
@@ -272,17 +435,32 @@ mod tests {
     #[test]
     fn adopt_workspace_captures_the_pane_in_the_action_and_refuses_without_an_agent() {
         let world = World::new();
-        world.runner.on("plugin pane open", ok(r#"{"result":{"type":"ok"}}"#));
+        world
+            .runner
+            .on("plugin pane open", ok(r#"{"result":{"type":"ok"}}"#));
         let context = r#"{"workspace_id":"w5","workspace_label":"My Repo","workspace_cwd":"/work","focused_pane_id":"w5:p1"}"#;
         let env = plugin_env(&world, &[("HERDR_PLUGIN_CONTEXT_JSON", context)]);
-        let ctx = Ctx { env: &env, ..world.ctx() };
+        let ctx = Ctx {
+            env: &env,
+            ..world.ctx()
+        };
         // No agent in the pane: refused before any popup opens.
         assert!(run_action(&ctx, "adopt-workspace").is_err());
         assert_eq!(world.runner.count("plugin pane open"), 0);
 
-        *world.agents.borrow_mut() = format!("[{}]", crate::scenarios::agent_json("w5", "w5:t1", "w5:p1", "/work", "", "idle"));
+        *world.agents.borrow_mut() = format!(
+            "[{}]",
+            crate::scenarios::agent_json("w5", "w5:t1", "w5:p1", "/work", "", "idle")
+        );
         run_action(&ctx, "adopt-workspace").unwrap();
         let handoff = read_handoff(&ctx);
-        assert_eq!((handoff.pane_id.as_str(), handoff.workspace_label.as_str(), handoff.workspace_cwd.as_str()), ("w5:p1", "My Repo", "/work"));
+        assert_eq!(
+            (
+                handoff.pane_id.as_str(),
+                handoff.workspace_label.as_str(),
+                handoff.workspace_cwd.as_str()
+            ),
+            ("w5:p1", "My Repo", "/work")
+        );
     }
 }

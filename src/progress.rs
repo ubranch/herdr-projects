@@ -94,7 +94,10 @@ pub fn all(root: &Path) -> Vec<Record> {
     let Ok(entries) = std::fs::read_dir(dir(root)) else {
         return Vec::new();
     };
-    entries.flatten().filter_map(|e| crate::project::read_json::<Record>(&e.path())).collect()
+    entries
+        .flatten()
+        .filter_map(|e| crate::project::read_json::<Record>(&e.path()))
+        .collect()
 }
 
 /// At most 40 columns, no control or bidi characters, trimmed. 100% is "Done".
@@ -102,11 +105,27 @@ pub fn clean(input: &str, columns: usize) -> String {
     let mut width = 0;
     input
         .chars()
-        .filter(|c| !c.is_control() && !matches!(*c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        .filter(|c| {
+            !c.is_control() && !matches!(*c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        })
         .take(120)
         .take_while(|c| {
             // East Asian wide characters take two columns; everything else one.
-            width += if ('\u{1100}'..='\u{115f}').contains(c) || ('\u{2e80}'..='\u{a4cf}').contains(c) || ('\u{ac00}'..='\u{d7a3}').contains(c) || ('\u{f900}'..='\u{faff}').contains(c) || ('\u{fe30}'..='\u{fe4f}').contains(c) || ('\u{ff00}'..='\u{ff60}').contains(c) || ('\u{ffe0}'..='\u{ffe6}').contains(c) || ('\u{1f300}'..='\u{1f64f}').contains(c) || ('\u{1f900}'..='\u{1f9ff}').contains(c) || ('\u{20000}'..='\u{3fffd}').contains(c) { 2 } else { 1 };
+            width += if ('\u{1100}'..='\u{115f}').contains(c)
+                || ('\u{2e80}'..='\u{a4cf}').contains(c)
+                || ('\u{ac00}'..='\u{d7a3}').contains(c)
+                || ('\u{f900}'..='\u{faff}').contains(c)
+                || ('\u{fe30}'..='\u{fe4f}').contains(c)
+                || ('\u{ff00}'..='\u{ff60}').contains(c)
+                || ('\u{ffe0}'..='\u{ffe6}').contains(c)
+                || ('\u{1f300}'..='\u{1f64f}').contains(c)
+                || ('\u{1f900}'..='\u{1f9ff}').contains(c)
+                || ('\u{20000}'..='\u{3fffd}').contains(c)
+            {
+                2
+            } else {
+                1
+            };
             width <= columns
         })
         .collect::<String>()
@@ -129,14 +148,20 @@ pub fn current(env: &Env, runner: &dyn Runner) -> Option<Current> {
 }
 
 /// The hook uses a short timeout: a slow server must not stall every tool call.
-pub fn current_within(env: &Env, runner: &dyn Runner, timeout: std::time::Duration) -> Option<Current> {
+pub fn current_within(
+    env: &Env,
+    runner: &dyn Runner,
+    timeout: std::time::Duration,
+) -> Option<Current> {
     if env.var("HERDR_ENV") != Some("1") {
         return None;
     }
     env.var("HERDR_PANE_ID")?;
     let socket = env.var("HERDR_SOCKET_PATH")?.to_string();
     let herdr = Herdr::new(env.herdr_bin(), &socket, runner);
-    let result = herdr.call(&["pane", "current", "--current"], timeout).ok()?;
+    let result = herdr
+        .call(&["pane", "current", "--current"], timeout)
+        .ok()?;
     let pane = &result["pane"];
     let pane_id = pane["pane_id"].as_str()?.to_string();
     Some(Current {
@@ -158,7 +183,11 @@ pub fn report(ctx: &Ctx, percent: Option<u8>, activity: &str) -> Result<()> {
     if percent.is_some_and(|p| p > 100) {
         bail!("--percent must be 0 to 100");
     }
-    let activity = if percent == Some(100) { DONE.to_string() } else { clean(activity, ACTIVITY_COLUMNS) };
+    let activity = if percent == Some(100) {
+        DONE.to_string()
+    } else {
+        clean(activity, ACTIVITY_COLUMNS)
+    };
     if activity.is_empty() {
         bail!("--activity is empty");
     }
@@ -171,14 +200,20 @@ pub fn report(ctx: &Ctx, percent: Option<u8>, activity: &str) -> Result<()> {
     record.percent = percent;
     record.reported_at = now();
     save(&ctx.root, &record)?;
-    println!("recorded: {}{activity}", percent.map(|p| format!("{p}% · ")).unwrap_or_default());
+    println!(
+        "recorded: {}{activity}",
+        percent.map(|p| format!("{p}% · ")).unwrap_or_default()
+    );
     Ok(())
 }
 
 /// `progress [--pane ID]`: the record for the calling pane, or the given one.
 pub fn print(ctx: &Ctx, pane: Option<&str>) -> Result<()> {
     let (socket, pane_id) = match pane {
-        Some(id) => (ctx.env.var("HERDR_SOCKET_PATH").unwrap_or("").to_string(), id.to_string()),
+        Some(id) => (
+            ctx.env.var("HERDR_SOCKET_PATH").unwrap_or("").to_string(),
+            id.to_string(),
+        ),
         None => match current(ctx.env, ctx.runner) {
             Some(c) => (c.socket, c.pane_id),
             None => bail!("not inside a Herdr pane; pass --pane ID"),
@@ -195,14 +230,19 @@ pub fn print(ctx: &Ctx, pane: Option<&str>) -> Result<()> {
 
 /// The instructions the SessionStart hook injects, with the exact command.
 pub fn instructions(prefix: &str, pane_id: &str) -> String {
-    format!("# Progress (herdr-projects)\n\n{}", guidance(prefix, Some(pane_id)))
+    format!(
+        "# Progress (herdr-projects)\n\n{}",
+        guidance(prefix, Some(pane_id))
+    )
 }
 
 /// The body of the progress instructions. Hooks inject it at session start;
 /// every other agent reads it in its thread brief or the coordinator skill,
 /// so any harness that can run a shell command reports.
 pub fn guidance(prefix: &str, pane_id: Option<&str>) -> String {
-    let pane = pane_id.map(|id| format!("this pane ({id})")).unwrap_or_else(|| "this pane".into());
+    let pane = pane_id
+        .map(|id| format!("this pane ({id})"))
+        .unwrap_or_else(|| "this pane".into());
     format!(
         "Report the progress of the user's whole current task through `{prefix} report`. This is your estimate, not a timer or a count of tools. Reporting failures must never stop the actual work: give one short diagnostic and continue, without retries.\n\n\
          Report a rough percentage in five-point increments and a two-to-four-word activity, such as `Reading code`, `Testing changes` or `Waiting for you`:\n\n\
@@ -215,24 +255,35 @@ pub fn guidance(prefix: &str, pane_id: Option<&str>) -> String {
 }
 
 pub fn reminder(prefix: &str) -> String {
-    format!("Progress check-in is due if this is a natural boundary: `{prefix} report --percent N --activity '...'`. Reassess the current task; do not invent progress. Report `Waiting for you` before a question to the user.")
+    format!(
+        "Progress check-in is due if this is a natural boundary: `{prefix} report --percent N --activity '...'`. Reassess the current task; do not invent progress. Report `Waiting for you` before a question to the user."
+    )
 }
 
 /// Events the reporter reacts to: the top-level agent's own SessionStart,
 /// UserPromptSubmit and PostToolUse, never a subagent's, and never the
 /// PostToolUse of the `report` call itself.
 pub fn eligible(event: &serde_json::Value) -> bool {
-    if ["agent_id", "subagent_id", "agent_transcript_path"].iter().any(|key| event.get(key).is_some_and(|v| !v.is_null())) {
+    if ["agent_id", "subagent_id", "agent_transcript_path"]
+        .iter()
+        .any(|key| event.get(key).is_some_and(|v| !v.is_null()))
+    {
         return false;
     }
-    if event["transcript_path"].as_str().is_some_and(|p| p.split(['/', '\\']).any(|part| part == "subagents")) {
+    if event["transcript_path"]
+        .as_str()
+        .is_some_and(|p| p.split(['/', '\\']).any(|part| part == "subagents"))
+    {
         return false;
     }
     let name = event["hook_event_name"].as_str().unwrap_or("");
     if !matches!(name, "SessionStart" | "PostToolUse" | "UserPromptSubmit") {
         return false;
     }
-    if name == "PostToolUse" && event["tool_input"].to_string().contains("herdr-projects") && event["tool_input"].to_string().contains(" report ") {
+    if name == "PostToolUse"
+        && event["tool_input"].to_string().contains("herdr-projects")
+        && event["tool_input"].to_string().contains(" report ")
+    {
         return false;
     }
     true
@@ -244,8 +295,21 @@ pub fn respond(record: &mut Record, kind: &str, prefix: &str, now: i64) -> Optio
     match kind {
         "SessionStart" => {
             // A new session in this pane: the old report no longer describes it.
-            let keep = (record.socket.clone(), record.pane_id.clone(), record.terminal_id.clone(), record.agent.clone());
-            *record = Record { socket: keep.0, pane_id: keep.1, terminal_id: keep.2, agent: keep.3, session_started_at: now, reminded_at: now, ..Record::default() };
+            let keep = (
+                record.socket.clone(),
+                record.pane_id.clone(),
+                record.terminal_id.clone(),
+                record.agent.clone(),
+            );
+            *record = Record {
+                socket: keep.0,
+                pane_id: keep.1,
+                terminal_id: keep.2,
+                agent: keep.3,
+                session_started_at: now,
+                reminded_at: now,
+                ..Record::default()
+            };
             Some(instructions(prefix, &record.pane_id))
         }
         "UserPromptSubmit" => {
@@ -255,11 +319,15 @@ pub fn respond(record: &mut Record, kind: &str, prefix: &str, now: i64) -> Optio
                 record.activity.clear();
                 record.reported_at = 0;
             }
-            Some(format!("Before task tools or a blocking question, check whether this request starts new work; if so report a fresh estimate. Then report before waiting for the user, for example `{prefix} report --unknown --activity 'Waiting for you'`."))
+            Some(format!(
+                "Before task tools or a blocking question, check whether this request starts new work; if so report a fresh estimate. Then report before waiting for the user, for example `{prefix} report --unknown --activity 'Waiting for you'`."
+            ))
         }
         "PostToolUse" => {
             let done = record.percent == Some(100);
-            let due = now - record.reminded_at >= REMIND_SECS && !done && (record.reported_at == 0 || now - record.reported_at >= REMIND_SECS);
+            let due = now - record.reminded_at >= REMIND_SECS
+                && !done
+                && (record.reported_at == 0 || now - record.reported_at >= REMIND_SECS);
             if due {
                 record.reminded_at = now;
                 Some(reminder(prefix))
@@ -280,7 +348,10 @@ pub fn foreign_session(record: &Record, event: &serde_json::Value) -> bool {
 
 /// The event under its Claude Code name, which the rest of the reporter
 /// uses: `hook_event_name` rewritten from the harness's own name.
-pub fn normalize(harness: &crate::setup::Harness, mut event: serde_json::Value) -> serde_json::Value {
+pub fn normalize(
+    harness: &crate::setup::Harness,
+    mut event: serde_json::Value,
+) -> serde_json::Value {
     let native = event["hook_event_name"].as_str().unwrap_or("");
     if let Some(i) = harness.events.iter().position(|e| *e == native) {
         event["hook_event_name"] = ["SessionStart", "UserPromptSubmit", "PostToolUse"][i].into();
@@ -306,7 +377,9 @@ pub fn hook(ctx: &Ctx, agent: &str) -> Result<()> {
     }
     use std::io::Read;
     let mut input = String::new();
-    std::io::stdin().take(1_048_576).read_to_string(&mut input)?;
+    std::io::stdin()
+        .take(1_048_576)
+        .read_to_string(&mut input)?;
     let Ok(event) = serde_json::from_str::<serde_json::Value>(&input) else {
         return Ok(());
     };
@@ -322,7 +395,10 @@ pub fn hook(ctx: &Ctx, agent: &str) -> Result<()> {
     // Codex runs hooks for nested threads too; only the pane's own thread reports.
     if agent == "codex"
         && let Some(native) = event["session_id"].as_str()
-        && ctx.env.var("CODEX_THREAD_ID").is_some_and(|id| id != native)
+        && ctx
+            .env
+            .var("CODEX_THREAD_ID")
+            .is_some_and(|id| id != native)
     {
         return Ok(());
     }
@@ -332,7 +408,9 @@ pub fn hook(ctx: &Ctx, agent: &str) -> Result<()> {
         match current_within(ctx.env, ctx.runner, std::time::Duration::from_secs(2)) {
             Some(p) if kind != "SessionStart" || !p.agent.is_empty() => break p,
             Some(p) if std::time::Instant::now() >= deadline => break p,
-            None if kind != "SessionStart" || std::time::Instant::now() >= deadline => return Ok(()),
+            None if kind != "SessionStart" || std::time::Instant::now() >= deadline => {
+                return Ok(());
+            }
             _ => std::thread::sleep(std::time::Duration::from_millis(100)),
         }
     };
@@ -346,7 +424,11 @@ pub fn hook(ctx: &Ctx, agent: &str) -> Result<()> {
     record.socket = pane.socket.clone();
     record.pane_id = pane.pane_id.clone();
     record.terminal_id = pane.terminal_id.clone();
-    record.agent = if pane.agent.is_empty() { agent.to_string() } else { pane.agent.clone() };
+    record.agent = if pane.agent.is_empty() {
+        agent.to_string()
+    } else {
+        pane.agent.clone()
+    };
     let prefix = crate::coordinator::current_prefix(&ctx.root)?;
     let before = record.clone();
     let text = respond(&mut record, &kind, &prefix, now());
@@ -366,7 +448,10 @@ pub fn hook(ctx: &Ctx, agent: &str) -> Result<()> {
 /// record is missing or describes an earlier pane with the same id.
 pub fn self_report(root: &Path, socket: &str, pane_id: &str, terminal_id: &str) -> Option<Record> {
     let record = load(root, socket, pane_id)?;
-    if !terminal_id.is_empty() && !record.terminal_id.is_empty() && record.terminal_id != terminal_id {
+    if !terminal_id.is_empty()
+        && !record.terminal_id.is_empty()
+        && record.terminal_id != terminal_id
+    {
         return None;
     }
     record.reported().then_some(record)
@@ -397,18 +482,36 @@ mod tests {
 
     #[test]
     fn helpers_and_the_reporters_own_call_do_not_trigger() {
-        assert!(!eligible(&json!({"hook_event_name":"PostToolUse","agent_id":"child"})));
-        assert!(!eligible(&json!({"hook_event_name":"PostToolUse","transcript_path":"/x/subagents/y.jsonl"})));
-        assert!(!eligible(&json!({"hook_event_name":"PostToolUse","transcript_path":r"C:\x\subagents\y.jsonl"})));
-        assert!(!eligible(&json!({"hook_event_name":"PostToolUse","tool_input":{"command":"/p/herdr-projects --root /r report --percent 5 --activity x"}})));
-        assert!(eligible(&json!({"hook_event_name":"PostToolUse","tool_input":{"command":"/p/herdr-projects --root /r context demo"}})));
-        assert!(eligible(&json!({"hook_event_name":"SessionStart","source":"compact"})));
+        assert!(!eligible(
+            &json!({"hook_event_name":"PostToolUse","agent_id":"child"})
+        ));
+        assert!(!eligible(
+            &json!({"hook_event_name":"PostToolUse","transcript_path":"/x/subagents/y.jsonl"})
+        ));
+        assert!(!eligible(
+            &json!({"hook_event_name":"PostToolUse","transcript_path":r"C:\x\subagents\y.jsonl"})
+        ));
+        assert!(!eligible(
+            &json!({"hook_event_name":"PostToolUse","tool_input":{"command":"/p/herdr-projects --root /r report --percent 5 --activity x"}})
+        ));
+        assert!(eligible(
+            &json!({"hook_event_name":"PostToolUse","tool_input":{"command":"/p/herdr-projects --root /r context demo"}})
+        ));
+        assert!(eligible(
+            &json!({"hook_event_name":"SessionStart","source":"compact"})
+        ));
         assert!(!eligible(&json!({"hook_event_name":"Stop"})));
     }
 
     #[test]
     fn session_start_injects_instructions_and_resets_the_record() {
-        let mut record = Record { pane_id: "w1:p1".into(), activity: "Old".into(), percent: Some(50), reported_at: 5, ..Record::default() };
+        let mut record = Record {
+            pane_id: "w1:p1".into(),
+            activity: "Old".into(),
+            percent: Some(50),
+            reported_at: 5,
+            ..Record::default()
+        };
         let text = respond(&mut record, "SessionStart", "/p/hp --root /r", 1000).unwrap();
         assert!(text.contains("/p/hp --root /r report --percent 25"));
         assert!(text.contains("(w1:p1)"));
@@ -420,7 +523,10 @@ mod tests {
 
     #[test]
     fn reminders_are_throttled_to_once_a_minute_and_stop_at_done() {
-        let mut record = Record { reminded_at: 1000, ..Record::default() };
+        let mut record = Record {
+            reminded_at: 1000,
+            ..Record::default()
+        };
         assert!(respond(&mut record, "PostToolUse", "hp", 1030).is_none());
         assert!(respond(&mut record, "PostToolUse", "hp", 1061).is_some());
         assert_eq!(record.reminded_at, 1061);
@@ -430,8 +536,17 @@ mod tests {
         assert!(respond(&mut record, "PostToolUse", "hp", 1200).is_some());
         record.percent = Some(100);
         assert!(respond(&mut record, "PostToolUse", "hp", 9000).is_none());
-        assert!(respond(&mut record, "UserPromptSubmit", "hp", 9001).unwrap().contains("Waiting for you"));
-        let mut asked = Record { activity: WAITING.into(), percent: Some(40), reported_at: 5, ..Record::default() };
+        assert!(
+            respond(&mut record, "UserPromptSubmit", "hp", 9001)
+                .unwrap()
+                .contains("Waiting for you")
+        );
+        let mut asked = Record {
+            activity: WAITING.into(),
+            percent: Some(40),
+            reported_at: 5,
+            ..Record::default()
+        };
         respond(&mut asked, "UserPromptSubmit", "hp", 10);
         assert!(!asked.waiting(), "an answer clears the old question");
         assert!(respond(&mut record, "Stop", "hp", 9002).is_none());
@@ -440,40 +555,79 @@ mod tests {
     #[test]
     fn native_events_are_normalized_and_answered_in_each_harness_shape() {
         let gemini = crate::setup::harness("gemini").unwrap();
-        let event = normalize(gemini, json!({"hook_event_name":"AfterTool","tool_input":{"command":"ls"}}));
+        let event = normalize(
+            gemini,
+            json!({"hook_event_name":"AfterTool","tool_input":{"command":"ls"}}),
+        );
         assert_eq!(event["hook_event_name"], "PostToolUse");
         assert!(eligible(&event));
-        assert_eq!(normalize(gemini, json!({"hook_event_name":"BeforeAgent"}))["hook_event_name"], "UserPromptSubmit");
-        assert_eq!(output(gemini, "AfterTool", "hi"), json!({"hookSpecificOutput":{"hookEventName":"AfterTool","additionalContext":"hi"}}));
+        assert_eq!(
+            normalize(gemini, json!({"hook_event_name":"BeforeAgent"}))["hook_event_name"],
+            "UserPromptSubmit"
+        );
+        assert_eq!(
+            output(gemini, "AfterTool", "hi"),
+            json!({"hookSpecificOutput":{"hookEventName":"AfterTool","additionalContext":"hi"}})
+        );
         let copilot = crate::setup::harness("copilot").unwrap();
-        assert_eq!(output(copilot, "SessionStart", "hi"), json!({"additionalContext":"hi"}));
+        assert_eq!(
+            output(copilot, "SessionStart", "hi"),
+            json!({"additionalContext":"hi"})
+        );
     }
 
     #[test]
     fn events_from_another_session_in_the_pane_are_a_subagents() {
-        let record = Record { session_id: "main".into(), ..Record::default() };
+        let record = Record {
+            session_id: "main".into(),
+            ..Record::default()
+        };
         assert!(foreign_session(&record, &json!({"session_id":"sub"})));
         assert!(!foreign_session(&record, &json!({"session_id":"main"})));
         assert!(!foreign_session(&record, &json!({})));
-        assert!(!foreign_session(&Record::default(), &json!({"session_id":"sub"})), "no SessionStart seen: accept");
+        assert!(
+            !foreign_session(&Record::default(), &json!({"session_id":"sub"})),
+            "no SessionStart seen: accept"
+        );
     }
 
     #[test]
     fn guidance_names_the_command_and_the_pane_when_known() {
         assert!(guidance("/p/hp --root /r", None).contains("top-level agent in this pane reports"));
         assert!(guidance("/p/hp --root /r", Some("w2:p3")).contains("this pane (w2:p3)"));
-        assert!(instructions("hp", "w1:p1").starts_with("# Progress (herdr-projects)\n\nReport the progress"));
+        assert!(
+            instructions("hp", "w1:p1")
+                .starts_with("# Progress (herdr-projects)\n\nReport the progress")
+        );
     }
 
     #[test]
     fn records_round_trip_per_session_and_stale_terminals_are_ignored() {
         let root = tempfile::tempdir().unwrap();
-        let record = Record { socket: "/a.sock".into(), pane_id: "w1:p1".into(), terminal_id: "term_1".into(), activity: WAITING.into(), reported_at: 7, ..Record::default() };
+        let record = Record {
+            socket: "/a.sock".into(),
+            pane_id: "w1:p1".into(),
+            terminal_id: "term_1".into(),
+            activity: WAITING.into(),
+            reported_at: 7,
+            ..Record::default()
+        };
         save(root.path(), &record).unwrap();
-        let other = Record { socket: "/b.sock".into(), pane_id: "w1:p1".into(), terminal_id: "term_9".into(), activity: "Testing".into(), reported_at: 8, ..Record::default() };
+        let other = Record {
+            socket: "/b.sock".into(),
+            pane_id: "w1:p1".into(),
+            terminal_id: "term_9".into(),
+            activity: "Testing".into(),
+            reported_at: 8,
+            ..Record::default()
+        };
         save(root.path(), &other).unwrap();
         assert_eq!(load(root.path(), "/a.sock", "w1:p1").unwrap(), record);
-        assert!(self_report(root.path(), "/a.sock", "w1:p1", "term_1").unwrap().waiting());
+        assert!(
+            self_report(root.path(), "/a.sock", "w1:p1", "term_1")
+                .unwrap()
+                .waiting()
+        );
         assert!(self_report(root.path(), "/a.sock", "w1:p1", "term_2").is_none());
         assert!(self_report(root.path(), "/a.sock", "w1:p1", "").is_some());
         prune(root.path(), "/a.sock", &["w1:p2".into()]);

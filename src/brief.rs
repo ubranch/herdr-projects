@@ -16,10 +16,10 @@
 use anyhow::Result;
 
 use crate::herdr::{Agent, Herdr};
+use crate::inbox;
 use crate::project::{self, Project};
 use crate::prompt_box;
 use crate::thread::{self, Thread};
-use crate::inbox;
 
 pub const SETTLE_SECS: i64 = 3;
 pub const MAX_ATTEMPTS: u32 = 3;
@@ -63,7 +63,8 @@ fn squeeze(text: &str) -> String {
 fn claim(project: &Project, id: &str, now: jiff::Timestamp) -> Result<Option<Thread>> {
     let mut claimed = None;
     thread::update(project, id, |t| {
-        let fresh = !t.brief_claimed.is_empty() && thread::seconds_since(&t.brief_claimed, now) < CLAIM_SECS;
+        let fresh = !t.brief_claimed.is_empty()
+            && thread::seconds_since(&t.brief_claimed, now) < CLAIM_SECS;
         if t.prompt_pending && !fresh {
             t.brief_claimed = project::now();
             claimed = Some(t.clone());
@@ -74,7 +75,13 @@ fn claim(project: &Project, id: &str, now: jiff::Timestamp) -> Result<Option<Thr
 
 /// One delivery step for a thread whose brief is pending, `agent` being its
 /// agent as just listed.
-pub fn deliver(project: &Project, herdr: &Herdr, record: &Thread, agent: &Agent, sender: Sender) -> Result<Outcome> {
+pub fn deliver(
+    project: &Project,
+    herdr: &Herdr,
+    record: &Thread,
+    agent: &Agent,
+    sender: Sender,
+) -> Result<Outcome> {
     let now = jiff::Timestamp::now();
     let Some(mut t) = claim(project, &record.id, now)? else {
         return Ok(Outcome::Taken);
@@ -95,11 +102,25 @@ pub fn deliver(project: &Project, herdr: &Herdr, record: &Thread, agent: &Agent,
     outcome
 }
 
-fn step(project: &Project, herdr: &Herdr, t: &mut Thread, agent: &Agent, sender: Sender, now: jiff::Timestamp) -> Result<Outcome> {
+fn step(
+    project: &Project,
+    herdr: &Herdr,
+    t: &mut Thread,
+    agent: &Agent,
+    sender: Sender,
+    now: jiff::Timestamp,
+) -> Result<Outcome> {
     let state = agent.agent_status.as_str();
     if matches!(state, "blocked" | "unknown" | "") {
         t.brief_seen.clear();
-        return Ok(Outcome::Waiting(format!("the agent is {}", if state.is_empty() { "not detected" } else { state })));
+        return Ok(Outcome::Waiting(format!(
+            "the agent is {}",
+            if state.is_empty() {
+                "not detected"
+            } else {
+                state
+            }
+        )));
     }
     let ready = agent.ready();
     // Nothing typed yet and not ready: nothing to look at.
@@ -109,9 +130,17 @@ fn step(project: &Project, herdr: &Herdr, t: &mut Thread, agent: &Agent, sender:
     }
     let screen = match herdr.agent_screen(&t.pane_id) {
         Ok(screen) => screen,
-        Err(error) => return Ok(Outcome::Waiting(format!("its screen could not be read: {error}"))),
+        Err(error) => {
+            return Ok(Outcome::Waiting(format!(
+                "its screen could not be read: {error}"
+            )));
+        }
     };
-    let kind = if agent.agent.is_empty() { t.agent.as_str() } else { agent.agent.as_str() };
+    let kind = if agent.agent.is_empty() {
+        t.agent.as_str()
+    } else {
+        agent.agent.as_str()
+    };
     if let Some(phrase) = crate::trust_screen::detect(kind, &screen) {
         t.brief_seen.clear();
         return Ok(Outcome::TrustScreen(phrase));
@@ -122,10 +151,13 @@ fn step(project: &Project, herdr: &Herdr, t: &mut Thread, agent: &Agent, sender:
     let shown = squeeze(&prompt_box::plain(&screen)).contains(&line);
 
     if t.brief_attempts > 0 {
-        let in_box_has_line = in_box.as_deref().is_some_and(|text| squeeze(text).contains(&line));
+        let in_box_has_line = in_box
+            .as_deref()
+            .is_some_and(|text| squeeze(text).contains(&line));
         // On screen and not in the box: it was taken. An agent whose box
         // cannot be read counts only once it works.
-        let taken = shown && !in_box_has_line && (in_box.as_deref() == Some("") || (!known && !ready));
+        let taken =
+            shown && !in_box_has_line && (in_box.as_deref() == Some("") || (!known && !ready));
         match in_box.as_deref() {
             _ if taken => return Ok(Outcome::Delivered),
             // Left in the box: submit it, never type it again.
@@ -134,10 +166,14 @@ fn step(project: &Project, herdr: &Herdr, t: &mut Thread, agent: &Agent, sender:
                     return Ok(stuck);
                 }
                 bump(project, t)?;
-                return Ok(match herdr.agent_send_keys(&t.pane_id, &["enter".to_string()]) {
-                    Ok(()) => Outcome::Waiting("pressed Enter on the brief left in its input box".into()),
-                    Err(error) => Outcome::Waiting(format!("could not press Enter: {error}")),
-                });
+                return Ok(
+                    match herdr.agent_send_keys(&t.pane_id, &["enter".to_string()]) {
+                        Ok(()) => Outcome::Waiting(
+                            "pressed Enter on the brief left in its input box".into(),
+                        ),
+                        Err(error) => Outcome::Waiting(format!("could not press Enter: {error}")),
+                    },
+                );
             }
             // An empty box and no line anywhere: it was dropped.
             Some("") if ready => {}
@@ -149,14 +185,26 @@ fn step(project: &Project, herdr: &Herdr, t: &mut Thread, agent: &Agent, sender:
                         return Ok(Outcome::Delivered);
                     }
                 } else {
-                    return Ok(give_up(project, t, "its input box cannot be read to check an earlier try")?);
+                    return give_up(
+                        project,
+                        t,
+                        "its input box cannot be read to check an earlier try",
+                    );
                 }
             }
-            _ => return Ok(Outcome::Waiting(format!("the agent is {state} and an earlier try may still be in its input box"))),
+            _ => {
+                return Ok(Outcome::Waiting(format!(
+                    "the agent is {state} and an earlier try may still be in its input box"
+                )));
+            }
         }
     } else if known && in_box.as_deref() != Some("") {
         t.brief_seen.clear();
-        let why = if in_box.is_none() { "its input box is not on screen (a menu or start-up screen?)" } else { "its input box holds text" };
+        let why = if in_box.is_none() {
+            "its input box is not on screen (a menu or start-up screen?)"
+        } else {
+            "its input box holds text"
+        };
         return Ok(Outcome::Waiting(why.into()));
     }
 
@@ -164,7 +212,11 @@ fn step(project: &Project, herdr: &Herdr, t: &mut Thread, agent: &Agent, sender:
         return Ok(stuck);
     }
     if sender == Sender::Ticker {
-        let key = format!("{}:{:x}", agent.state_change_seq, fnv(&prompt_box::plain(&screen)));
+        let key = format!(
+            "{}:{:x}",
+            agent.state_change_seq,
+            fnv(&prompt_box::plain(&screen))
+        );
         if t.brief_seen != key {
             t.brief_seen = key;
             t.brief_seen_at = project::now();
@@ -181,7 +233,9 @@ fn step(project: &Project, herdr: &Herdr, t: &mut Thread, agent: &Agent, sender:
             t.brief_attempts -= 1;
             Ok(Outcome::Waiting(format!("{error}")))
         }
-        Err(error) => Ok(Outcome::Waiting(format!("not confirmed ({error}); the screen is checked before any retry"))),
+        Err(error) => Ok(Outcome::Waiting(format!(
+            "not confirmed ({error}); the screen is checked before any retry"
+        ))),
     }
 }
 
@@ -198,7 +252,12 @@ fn bump(project: &Project, t: &mut Thread) -> Result<()> {
 
 fn out_of_tries(project: &Project, t: &mut Thread, sender: Sender) -> Result<Option<Outcome>> {
     if sender == Sender::Ticker && t.brief_attempts >= MAX_ATTEMPTS {
-        return give_up(project, t, &format!("{MAX_ATTEMPTS} tries were not confirmed")).map(Some);
+        return give_up(
+            project,
+            t,
+            &format!("{MAX_ATTEMPTS} tries were not confirmed"),
+        )
+        .map(Some);
     }
     Ok(None)
 }
@@ -210,14 +269,23 @@ fn give_up(project: &Project, t: &mut Thread, why: &str) -> Result<Outcome> {
             "{}: its brief did not get through ({why}). `thread read {} {}` shows the pane; `thread brief` sends it once the input box is empty",
             t.id, project.slug, t.id
         );
-        inbox::write(project, "thread-state", &t.id, "brief not delivered", &summary, "")?;
+        inbox::write(
+            project,
+            "thread-state",
+            &t.id,
+            "brief not delivered",
+            &summary,
+            "",
+        )?;
     }
     Ok(Outcome::Stuck)
 }
 
 /// A small stable hash of the screen text (FNV-1a).
 fn fnv(text: &str) -> u64 {
-    text.bytes().fold(0xcbf29ce484222325, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3))
+    text.bytes().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    })
 }
 
 #[cfg(test)]
@@ -231,11 +299,18 @@ mod tests {
     use crate::thread::Group;
     use crate::ticker::brief_pass_for_test as pass;
 
-    const STALLED: &str = r#"{"error":{"code":"agent_prompt_stalled","message":"agent did not start working"}}"#;
+    const STALLED: &str =
+        r#"{"error":{"code":"agent_prompt_stalled","message":"agent did not start working"}}"#;
 
     /// A started thread waiting for its brief in pane `w2:p1`, its agent
     /// `state`; `agent prompt` answers with whatever `reply` holds.
-    fn world(state: &str) -> (World, Project, Rc<RefCell<std::result::Result<String, String>>>) {
+    fn world(
+        state: &str,
+    ) -> (
+        World,
+        Project,
+        Rc<RefCell<std::result::Result<String, String>>>,
+    ) {
         let world = World::new();
         let project = world.project("demo", "a.sock");
         let cwd = world.home.path().to_string_lossy().into_owned();
@@ -244,16 +319,24 @@ mod tests {
             t.launch_attempts = 1;
             t.launched_at = project::now();
         });
-        *world.panes.borrow_mut() = format!("[{},{}]", world.coordinator_pane(&project), pane_json("w2", "w2:t1", "w2:p1", &cwd));
+        *world.panes.borrow_mut() = format!(
+            "[{},{}]",
+            world.coordinator_pane(&project),
+            pane_json("w2", "w2:t1", "w2:p1", &cwd)
+        );
         set_state(&world, state);
-        let reply: Rc<RefCell<std::result::Result<String, String>>> = Rc::new(RefCell::new(Ok(r#"{"result":{"agent":{"agent_status":"working"}}}"#.to_string())));
+        let reply: Rc<RefCell<std::result::Result<String, String>>> = Rc::new(RefCell::new(Ok(
+            r#"{"result":{"agent":{"agent_status":"working"}}}"#.to_string(),
+        )));
         let answer = reply.clone();
         world.runner.on_fn(
             |cmd| cmd.display().contains("agent prompt"),
-            move |_| Ok(match &*answer.borrow() {
-                Ok(text) => ok(text),
-                Err(text) => fail(1, text),
-            }),
+            move |_| {
+                Ok(match &*answer.borrow() {
+                    Ok(text) => ok(text),
+                    Err(text) => fail(1, text),
+                })
+            },
         );
         world.runner.on("agent send-keys", ok(""));
         (world, project, reply)
@@ -261,7 +344,10 @@ mod tests {
 
     fn set_state(world: &World, state: &str) {
         let cwd = world.home.path().to_string_lossy().into_owned();
-        *world.agents.borrow_mut() = format!("[{}]", agent_json("w2", "w2:t1", "w2:p1", &cwd, "hp-demo-t-0001", state));
+        *world.agents.borrow_mut() = format!(
+            "[{}]",
+            agent_json("w2", "w2:t1", "w2:p1", &cwd, "hp-demo-t-0001", state)
+        );
     }
 
     fn line() -> String {
@@ -270,7 +356,11 @@ mod tests {
 
     /// The launch line in the conversation above an empty box.
     fn taken_screen() -> String {
-        format!("❯ {}\n\n● Reading the brief\n{}", line(), claude_screen(None))
+        format!(
+            "❯ {}\n\n● Reading the brief\n{}",
+            line(),
+            claude_screen(None)
+        )
     }
 
     fn record(project: &Project) -> Thread {
@@ -308,9 +398,17 @@ mod tests {
         assert!(!pass(&ctx));
         assert_eq!(prompts(&world), 1);
         let calls = world.runner.calls.borrow();
-        let sent = calls.iter().find(|c| c.display().contains("agent prompt")).unwrap();
+        let sent = calls
+            .iter()
+            .find(|c| c.display().contains("agent prompt"))
+            .unwrap();
         assert_eq!(prompt_text(sent), line());
-        assert!(sent.display().ends_with("--wait --until working --until blocked --timeout 8000"), "{}", sent.display());
+        assert!(
+            sent.display()
+                .ends_with("--wait --until working --until blocked --timeout 8000"),
+            "{}",
+            sent.display()
+        );
         drop(calls);
         let t = record(&project);
         assert!(!t.prompt_pending && t.brief_claimed.is_empty());
@@ -331,7 +429,13 @@ mod tests {
         // The line sits in the box: Enter, not the text again.
         *world.screen.borrow_mut() = claude_screen(Some(&line()));
         assert!(pass(&ctx));
-        assert_eq!((prompts(&world), world.runner.count("agent send-keys w2:p1 enter")), (1, 1));
+        assert_eq!(
+            (
+                prompts(&world),
+                world.runner.count("agent send-keys w2:p1 enter")
+            ),
+            (1, 1)
+        );
         // Now it is in the conversation and the agent works: delivered.
         set_state(&world, "working");
         *world.screen.borrow_mut() = taken_screen();
@@ -362,9 +466,16 @@ mod tests {
         assert_eq!(prompts(&world), MAX_ATTEMPTS as usize);
         let t = record(&project);
         assert!(t.prompt_pending && t.brief_stuck);
-        let items: Vec<_> = inbox::unhandled(&project).into_iter().filter(|i| i.event == "brief not delivered").collect();
+        let items: Vec<_> = inbox::unhandled(&project)
+            .into_iter()
+            .filter(|i| i.event == "brief not delivered")
+            .collect();
         assert_eq!(items.len(), 1);
-        assert!(items[0].summary.contains("`thread brief`"), "{}", items[0].summary);
+        assert!(
+            items[0].summary.contains("`thread brief`"),
+            "{}",
+            items[0].summary
+        );
         // The ticker leaves it alone and shows it as waiting on you.
         crate::ticker::tick_project(&ctx, &project).unwrap();
         assert_eq!(prompts(&world), MAX_ATTEMPTS as usize);
@@ -404,7 +515,8 @@ mod tests {
     fn a_blocked_answer_types_nothing_and_does_not_count() {
         let (world, project, reply) = world("idle");
         let ctx = world.ctx();
-        *reply.borrow_mut() = Err(r#"{"error":{"code":"agent_blocked","message":"blocked"}}"#.into());
+        *reply.borrow_mut() =
+            Err(r#"{"error":{"code":"agent_blocked","message":"blocked"}}"#.into());
         pass(&ctx);
         settled(&project);
         pass(&ctx);
@@ -441,7 +553,11 @@ mod tests {
         let ctx = world.ctx();
         thread::update(&project, "t-0001", |t| t.agent = "copilot".into()).unwrap();
         let cwd = world.home.path().to_string_lossy().into_owned();
-        *world.agents.borrow_mut() = format!("[{}]", agent_json("w2", "w2:t1", "w2:p1", &cwd, "hp-demo-t-0001", "idle").replace("\"claude\"", "\"copilot\""));
+        *world.agents.borrow_mut() = format!(
+            "[{}]",
+            agent_json("w2", "w2:t1", "w2:p1", &cwd, "hp-demo-t-0001", "idle")
+                .replace("\"claude\"", "\"copilot\"")
+        );
         *world.screen.borrow_mut() = "copilot> \n".into();
         *reply.borrow_mut() = Err(STALLED.into());
         pass(&ctx);
@@ -463,7 +579,10 @@ mod tests {
         settled(&project);
         assert!(!pass(&ctx));
         let calls = world.runner.calls.borrow();
-        let sent = calls.iter().find(|c| c.display().contains("agent prompt")).unwrap();
+        let sent = calls
+            .iter()
+            .find(|c| c.display().contains("agent prompt"))
+            .unwrap();
         assert_eq!(sent.args[..2], ["--machine".to_string(), "box".to_string()]);
         drop(calls);
         assert!(!record(&project).prompt_pending);
@@ -484,14 +603,28 @@ mod tests {
         let ctx = world.ctx();
         thread::update(&project, "t-0001", |t| t.prompt_pending = false).unwrap();
         *reply.borrow_mut() = Err(STALLED.into());
-        let error = crate::threads::prompt(&ctx, "demo", "t-0001", "Also the docs.").unwrap_err().to_string();
-        assert!(error.contains("prompt_unconfirmed") && error.contains("Do not send it again"), "{error}");
+        let error = crate::threads::prompt(&ctx, "demo", "t-0001", "Also the docs.")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("prompt_unconfirmed") && error.contains("Do not send it again"),
+            "{error}"
+        );
         assert_eq!(prompts(&world), 1);
         // It was typed, so the task file records it.
-        assert!(std::fs::read_to_string(thread::task_path(&project, "t-0001")).unwrap().contains("Also the docs."));
+        assert!(
+            std::fs::read_to_string(thread::task_path(&project, "t-0001"))
+                .unwrap()
+                .contains("Also the docs.")
+        );
         // A refusal before typing records nothing.
-        *reply.borrow_mut() = Err(r#"{"error":{"code":"agent_blocked","message":"blocked"}}"#.into());
+        *reply.borrow_mut() =
+            Err(r#"{"error":{"code":"agent_blocked","message":"blocked"}}"#.into());
         assert!(crate::threads::prompt(&ctx, "demo", "t-0001", "Second.").is_err());
-        assert!(!std::fs::read_to_string(thread::task_path(&project, "t-0001")).unwrap().contains("Second."));
+        assert!(
+            !std::fs::read_to_string(thread::task_path(&project, "t-0001"))
+                .unwrap()
+                .contains("Second.")
+        );
     }
 }

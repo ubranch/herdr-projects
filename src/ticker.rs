@@ -79,7 +79,11 @@ pub fn lock_state(root: &Path) -> LockState {
                 .unwrap_or_default();
             // The next owner may have acquired the token but not yet cleared
             // or published metadata. A dead previous PID is not that owner.
-            LockState::Held(if info.pid != 0 && !process_alive(info.pid) { Info::default() } else { info })
+            LockState::Held(if info.pid != 0 && !process_alive(info.pid) {
+                Info::default()
+            } else {
+                info
+            })
         }
     }
 }
@@ -100,11 +104,14 @@ fn process_alive(pid: u32) -> bool {
 fn process_alive(pid: u32) -> bool {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use windows_sys::Win32::Foundation::{ERROR_INVALID_PARAMETER, WAIT_OBJECT_0};
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
     if handle.is_null() {
         // Access denied is not evidence of a dead process.
-        return std::io::Error::last_os_error().raw_os_error() != Some(ERROR_INVALID_PARAMETER as i32);
+        return std::io::Error::last_os_error().raw_os_error()
+            != Some(ERROR_INVALID_PARAMETER as i32);
     }
     let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
     unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) != WAIT_OBJECT_0 }
@@ -122,7 +129,11 @@ pub enum StartAction {
 pub fn decide_start(lock: &LockState, my_version: &str, stop_file_exists: bool) -> StartAction {
     match lock {
         LockState::Free => StartAction::Spawn,
-        LockState::Held(info) if (info.version == my_version || info.version.is_empty()) && !stop_file_exists => StartAction::Nothing,
+        LockState::Held(info)
+            if (info.version == my_version || info.version.is_empty()) && !stop_file_exists =>
+        {
+            StartAction::Nothing
+        }
         LockState::Held(_) => StartAction::StopThenSpawn,
     }
 }
@@ -171,7 +182,13 @@ fn spawn(root: &Path) -> Result<()> {
         .stderr(Stdio::null());
     // Pane variables belong to whoever started us, not to the ticker: every
     // project carries its own recorded socket.
-    for key in ["HERDR_SOCKET_PATH", "HERDR_SESSION", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"] {
+    for key in [
+        "HERDR_SOCKET_PATH",
+        "HERDR_SESSION",
+        "HERDR_PANE_ID",
+        "HERDR_TAB_ID",
+        "HERDR_WORKSPACE_ID",
+    ] {
         command.env_remove(key);
     }
     #[cfg(unix)]
@@ -208,7 +225,10 @@ pub fn stop(root: &Path) -> Result<()> {
         std::thread::sleep(Duration::from_millis(250));
     }
     let _ = std::fs::remove_file(stop_path(root));
-    bail!("the ticker did not exit within {} seconds", STOP_WAIT.as_secs())
+    bail!(
+        "the ticker did not exit within {} seconds",
+        STOP_WAIT.as_secs()
+    )
 }
 
 pub fn status(root: &Path) -> Result<()> {
@@ -224,13 +244,15 @@ pub fn status(root: &Path) -> Result<()> {
                 println!("  {tool:<6} {path}");
             }
             if info.version != crate::VERSION {
-                println!("  note: this binary is {}; `ticker start` replaces the running one", crate::VERSION);
+                println!(
+                    "  note: this binary is {}; `ticker start` replaces the running one",
+                    crate::VERSION
+                );
             }
         }
     }
     Ok(())
 }
-
 
 pub struct Log {
     path: PathBuf,
@@ -247,7 +269,9 @@ impl Log {
             && let Ok(mut reader) = File::open(&self.path)
         {
             let mut tail = Vec::new();
-            if reader.seek(SeekFrom::End(-((LOG_CAP / 2) as i64))).is_ok() && reader.read_to_end(&mut tail).is_ok() {
+            if reader.seek(SeekFrom::End(-((LOG_CAP / 2) as i64))).is_ok()
+                && reader.read_to_end(&mut tail).is_ok()
+            {
                 let start = tail.iter().position(|b| *b == b'\n').map_or(0, |i| i + 1);
                 let _ = project::write_atomic(&self.path, &tail[start..]);
             }
@@ -286,7 +310,11 @@ pub fn run(ctx: &Ctx) -> Result<()> {
         tools: ["herdr", "git", "gh", "ssh", "scp", "rsync"]
             .iter()
             .map(|tool| {
-                let name = if *tool == "herdr" { ctx.env.herdr_bin() } else { tool.to_string() };
+                let name = if *tool == "herdr" {
+                    ctx.env.herdr_bin()
+                } else {
+                    tool.to_string()
+                };
                 let path = crate::profiles::find_executable(ctx.env, &name)
                     .map(|path| path.display().to_string())
                     .unwrap_or_else(|| "(not found)".to_string());
@@ -296,8 +324,13 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     };
     project::write_json(&info_path(root), &info)?;
 
-    let log = Log { path: log_path(root) };
-    log.line(&format!("ticker {} started (pid {})", info.version, info.pid));
+    let log = Log {
+        path: log_path(root),
+    };
+    log.line(&format!(
+        "ticker {} started (pid {})",
+        info.version, info.pid
+    ));
     let mut last_reachable = Instant::now();
     let mut memory = Memory::new(ctx);
     loop {
@@ -403,16 +436,31 @@ pub fn brief_pass(ctx: &Ctx, log: &Log) -> bool {
         // Another machine costs an ssh call per look: only while its agent is new.
         let pending: Vec<thread::Thread> = thread::list(&project)
             .into_iter()
-            .filter(|t| t.status == thread::Status::Open && t.prompt_pending && !t.brief_stuck && t.launch_attempts > 0)
-            .filter(|t| !t.is_remote() || !t.launched_at.is_empty() && thread::seconds_since(&t.launched_at, now) < REMOTE_BRIEF_WINDOW_SECS)
+            .filter(|t| {
+                t.status == thread::Status::Open
+                    && t.prompt_pending
+                    && !t.brief_stuck
+                    && t.launch_attempts > 0
+            })
+            .filter(|t| {
+                !t.is_remote()
+                    || !t.launched_at.is_empty()
+                        && thread::seconds_since(&t.launched_at, now) < REMOTE_BRIEF_WINDOW_SECS
+            })
             .collect();
-        let Some(record) = project.coordinator().filter(|r| !pending.is_empty() && !r.socket.is_empty()) else {
+        let Some(record) = project
+            .coordinator()
+            .filter(|r| !pending.is_empty() && !r.socket.is_empty())
+        else {
             continue;
         };
         let herdr = Herdr::new(ctx.env.herdr_bin(), &record.socket, ctx.runner);
         for t in &pending {
             let on = herdr.on_machine(&t.machine);
-            let Some(agents) = lists.entry(format!("{}\n{}", record.socket, t.machine)).or_insert_with(|| on.agent_list().ok()) else {
+            let Some(agents) = lists
+                .entry(format!("{}\n{}", record.socket, t.machine))
+                .or_insert_with(|| on.agent_list().ok())
+            else {
                 continue;
             };
             let Some(agent) = agents.iter().find(|a| thread::agent_matches(t, a)) else {
@@ -454,7 +502,12 @@ impl Sessions {
             .collect();
         known.sort();
         known.dedup();
-        Sessions { lists: Default::default(), candidates: None, known, parts: Default::default() }
+        Sessions {
+            lists: Default::default(),
+            candidates: None,
+            known,
+            parts: Default::default(),
+        }
     }
 
     /// `None` when the socket is gone or the session does not answer.
@@ -477,8 +530,12 @@ impl Sessions {
             return found.clone();
         }
         let mut found = Vec::new();
-        if let Ok(session) = crate::paths::resolve_session(&Default::default(), ctx.env, ctx.runner) {
-            found.push((session.socket.to_string_lossy().into_owned(), session.name.unwrap_or_default()));
+        if let Ok(session) = crate::paths::resolve_session(&Default::default(), ctx.env, ctx.runner)
+        {
+            found.push((
+                session.socket.to_string_lossy().into_owned(),
+                session.name.unwrap_or_default(),
+            ));
         }
         for socket in &self.known {
             if !found.iter().any(|(s, _)| s == socket) {
@@ -498,7 +555,11 @@ impl Sessions {
 /// working in the project folder, in the default session or any session
 /// another project uses, becomes its coordinator and is recorded just as
 /// `open` records one. Agents in `threads/` or a worktree are threads.
-fn discover_record(ctx: &Ctx, project: &Project, sessions: &mut Sessions) -> Result<Option<project::Coordinator>> {
+fn discover_record(
+    ctx: &Ctx,
+    project: &Project,
+    sessions: &mut Sessions,
+) -> Result<Option<project::Coordinator>> {
     for (socket, name) in sessions.candidates(ctx) {
         let Some((agents, _)) = sessions.get(ctx, &socket) else {
             continue;
@@ -523,11 +584,19 @@ fn headless_routines(ctx: &Ctx, project: &Project) -> Vec<anyhow::Error> {
 }
 
 /// `coordinator`: the project has a live coordinator this tick.
-fn routine_pass(ctx: &Ctx, project: &Project, state: &mut steps::State, coordinator: bool) -> Vec<anyhow::Error> {
+fn routine_pass(
+    ctx: &Ctx,
+    project: &Project,
+    state: &mut steps::State,
+    coordinator: bool,
+) -> Vec<anyhow::Error> {
     let zoned = jiff::Zoned::now();
     match project.read_project_md() {
         Ok(_) => {
-            let commands = project.safety(&ctx.config_dir).map(|s| s.routine_commands).unwrap_or(false);
+            let commands = project
+                .safety(&ctx.config_dir)
+                .map(|s| s.routine_commands)
+                .unwrap_or(false);
             steps::routines(ctx, project, state, commands, coordinator, None, &zoned)
         }
         Err(error) => {
@@ -547,50 +616,111 @@ fn mark_paused(ctx: &Ctx, project: &Project, sessions: &mut Sessions) {
     if record.socket.is_empty() || !Path::new(&record.socket).exists() {
         return;
     }
-    let part = part(ctx, project, &record, &coordinator::live(project), &[], true);
-    sessions.parts.entry(record.socket).or_default().insert(project.slug.clone(), part);
+    let part = part(
+        ctx,
+        project,
+        &record,
+        &coordinator::live(project),
+        &[],
+        true,
+    );
+    sessions
+        .parts
+        .entry(record.socket)
+        .or_default()
+        .insert(project.slug.clone(), part);
 }
 
 /// A project's agents and Spaces in sidebar order: coordinators, then local
 /// threads by need; the home Space, then each thread's repository Space and
 /// its own. Each agent carries its sub-line (the state line's fact and its
 /// fresh self-reported activity).
-fn part(ctx: &Ctx, project: &Project, record: &project::Coordinator, coordinators: &[coordinator::LivePane], agents: &[Agent], paused: bool) -> crate::grouping::ProjectPart {
+fn part(
+    ctx: &Ctx,
+    project: &Project,
+    record: &project::Coordinator,
+    coordinators: &[coordinator::LivePane],
+    agents: &[Agent],
+    paused: bool,
+) -> crate::grouping::ProjectPart {
     let slug = &project.slug;
     let threads = open_threads(project, false);
     let activity = |pane: &str| -> (Option<crate::progress::Record>, String) {
-        let terminal = agents.iter().find(|a| a.pane_id == pane).map(|a| a.terminal_id.clone()).unwrap_or_default();
+        let terminal = agents
+            .iter()
+            .find(|a| a.pane_id == pane)
+            .map(|a| a.terminal_id.clone())
+            .unwrap_or_default();
         let report = crate::progress::self_report(&ctx.root, &record.socket, pane, &terminal);
-        let text = report.as_ref().filter(|r| crate::progress::fresh(r)).map(|r| r.activity.clone()).unwrap_or_default();
+        let text = report
+            .as_ref()
+            .filter(|r| crate::progress::fresh(r))
+            .map(|r| r.activity.clone())
+            .unwrap_or_default();
         (report, text)
     };
     let mut panes: Vec<crate::grouping::PaneRow> = Vec::new();
     let recorded = (!record.pane_id.is_empty()).then(|| record.pane_id.clone());
-    for pane in coordinators.iter().map(|c| c.pane_id.clone()).chain(recorded) {
+    for pane in coordinators
+        .iter()
+        .map(|c| c.pane_id.clone())
+        .chain(recorded)
+    {
         if panes.iter().any(|p| p.pane == pane) {
             continue;
         }
         let (report, text) = activity(&pane);
-        let line = coordinators.iter().find(|c| c.pane_id == pane).map(|c| coordinator::row_state(c, report.as_ref()).1).unwrap_or_default();
-        let sub = if paused { String::new() } else { crate::sidebar::sub_line(&line, &text) };
-        panes.push(crate::grouping::PaneRow { key: crate::grouping::coordinator_key(slug, &pane), pane, sub });
+        let line = coordinators
+            .iter()
+            .find(|c| c.pane_id == pane)
+            .map(|c| coordinator::row_state(c, report.as_ref()).1)
+            .unwrap_or_default();
+        let sub = if paused {
+            String::new()
+        } else {
+            crate::sidebar::sub_line(&line, &text)
+        };
+        panes.push(crate::grouping::PaneRow {
+            key: crate::grouping::coordinator_key(slug, &pane),
+            pane,
+            sub,
+        });
     }
     for t in &threads {
-        let rank = thread::Group::from_token(&t.last_group).map(thread::Group::rank).unwrap_or(9);
+        let rank = thread::Group::from_token(&t.last_group)
+            .map(thread::Group::rank)
+            .unwrap_or(9);
         if !t.pane_id.is_empty() {
-            let sub = if paused { String::new() } else { crate::sidebar::sub_line(&t.state_line, &activity(&t.pane_id).1) };
-            panes.push(crate::grouping::PaneRow { pane: t.pane_id.clone(), key: crate::grouping::thread_key(slug, rank, &t.id), sub });
+            let sub = if paused {
+                String::new()
+            } else {
+                crate::sidebar::sub_line(&t.state_line, &activity(&t.pane_id).1)
+            };
+            panes.push(crate::grouping::PaneRow {
+                pane: t.pane_id.clone(),
+                key: crate::grouping::thread_key(slug, rank, &t.id),
+                sub,
+            });
         }
     }
     let mut spaces: Vec<String> = Vec::new();
-    let home = coordinators.iter().map(|c| c.workspace_id.clone()).chain([record.workspace_id.clone()]);
-    let own = threads.iter().flat_map(|t| [t.repo_workspace.clone(), t.workspace_id.clone()]);
+    let home = coordinators
+        .iter()
+        .map(|c| c.workspace_id.clone())
+        .chain([record.workspace_id.clone()]);
+    let own = threads
+        .iter()
+        .flat_map(|t| [t.repo_workspace.clone(), t.workspace_id.clone()]);
     for id in home.chain(own) {
         if !id.is_empty() && !spaces.contains(&id) {
             spaces.push(id);
         }
     }
-    crate::grouping::ProjectPart { panes, home: record.workspace_id.clone(), spaces }
+    crate::grouping::ProjectPart {
+        panes,
+        home: record.workspace_id.clone(),
+        spaces,
+    }
 }
 
 #[cfg(test)]
@@ -648,10 +778,23 @@ struct Pass {
     error: Option<anyhow::Error>,
 }
 
-fn thread_pass(project: &Project, herdr: &Herdr, socket: &str, threads: &[thread::Thread], agents: &[Agent], panes: &[Pane], hashes: Option<&std::collections::BTreeMap<String, String>>) -> Result<Pass> {
+fn thread_pass(
+    project: &Project,
+    herdr: &Herdr,
+    socket: &str,
+    threads: &[thread::Thread],
+    agents: &[Agent],
+    panes: &[Pane],
+    hashes: Option<&std::collections::BTreeMap<String, String>>,
+) -> Result<Pass> {
     let slug = &project.slug;
     let now = jiff::Timestamp::now();
-    let mut pass = Pass { transitions: Vec::new(), recorded_panes: 0, missing_panes: 0, error: None };
+    let mut pass = Pass {
+        transitions: Vec::new(),
+        recorded_panes: 0,
+        missing_panes: 0,
+        error: None,
+    };
     for t in threads {
         if t.status == thread::Status::Starting {
             if thread::seconds_since(&t.created, now) >= thread::STARTING_TIMEOUT_SECS {
@@ -667,7 +810,9 @@ fn thread_pass(project: &Project, herdr: &Herdr, socket: &str, threads: &[thread
         if let Some(agent) = agents.iter().find(|a| thread::needs_rename(t, a))
             && let Err(error) = herdr.agent_rename(&agent.pane_id, &t.agent_name)
         {
-            pass.error = pass.error.or(Some(anyhow::anyhow!("{}: rename: {error}", t.id)));
+            pass.error = pass
+                .error
+                .or(Some(anyhow::anyhow!("{}: rename: {error}", t.id)));
         }
         if !t.pane_id.is_empty() {
             pass.recorded_panes += 1;
@@ -675,13 +820,21 @@ fn thread_pass(project: &Project, herdr: &Herdr, socket: &str, threads: &[thread
         }
         // A brief about to go to a trust screen Herdr reads as ready would
         // answer it: hold the brief and count the thread as blocked.
-        let brief_due = t.prompt_pending && live.agent_state.as_deref().is_some_and(crate::herdr::ready_state);
+        let brief_due = t.prompt_pending
+            && live
+                .agent_state
+                .as_deref()
+                .is_some_and(crate::herdr::ready_state);
         // An unreadable screen holds the brief too, without calling it blocked.
         let screen = brief_due.then(|| crate::trust_screen::showing(herdr, &t.pane_id, &t.agent));
         let hold_brief = !matches!(screen, None | Some(Ok(None)));
         if matches!(screen, Some(Ok(Some(_)))) {
             live.agent_state = Some("blocked".into());
-            live.state_secs = if t.last_state == "blocked" { thread::seconds_since(&t.last_state_change, now) } else { 0 };
+            live.state_secs = if t.last_state == "blocked" {
+                thread::seconds_since(&t.last_state_change, now)
+            } else {
+                0
+            };
         }
         let state = live.agent_state.clone().unwrap_or_default();
         if state != t.last_state {
@@ -701,7 +854,11 @@ fn thread_pass(project: &Project, herdr: &Herdr, socket: &str, threads: &[thread
         {
             match crate::brief::deliver(project, herdr, t, agent, crate::brief::Sender::Ticker) {
                 Ok(outcome) => delivered = outcome == crate::brief::Outcome::Delivered,
-                Err(error) => pass.error = pass.error.or(Some(anyhow::anyhow!("{}: brief: {error:#}", t.id))),
+                Err(error) => {
+                    pass.error = pass
+                        .error
+                        .or(Some(anyhow::anyhow!("{}: brief: {error:#}", t.id)))
+                }
             }
         }
 
@@ -713,13 +870,31 @@ fn thread_pass(project: &Project, herdr: &Herdr, socket: &str, threads: &[thread
             None => thread::local_report_hash(t),
         };
         let report_hash = fresh_hash.unwrap_or_else(|| t.report_hash.clone());
-        let after = thread::Thread { prompt_pending: t.prompt_pending && !delivered, report_hash, ..t.clone() };
+        let after = thread::Thread {
+            prompt_pending: t.prompt_pending && !delivered,
+            report_hash,
+            ..t.clone()
+        };
         // In the tick that delivers a prompt the agent still reads as idle; it
         // has just been given work, so it is Working, not Idle.
-        let group = if delivered { thread::Group::Working } else { thread::group(&after, &live, now) };
+        let group = if delivered {
+            thread::Group::Working
+        } else {
+            thread::group(&after, &live, now)
+        };
         if !t.last_group.is_empty() && group.token() != t.last_group {
-            let note = if !live.pane_exists { "pane closed".to_string() } else if state.is_empty() { "no agent".to_string() } else { state.clone() };
-            pass.transitions.push(Transition { id: t.id.clone(), to: group, note });
+            let note = if !live.pane_exists {
+                "pane closed".to_string()
+            } else if state.is_empty() {
+                "no agent".to_string()
+            } else {
+                state.clone()
+            };
+            pass.transitions.push(Transition {
+                id: t.id.clone(),
+                to: group,
+                note,
+            });
         }
         let line = crate::sidebar::state_line(group, &after, &live, now);
         let (activity, percent) = match &live.self_report {
@@ -727,7 +902,12 @@ fn thread_pass(project: &Project, herdr: &Herdr, socket: &str, threads: &[thread
             None => (String::new(), None),
         };
         let self_changed = !t.is_remote() && (activity != t.activity || percent != t.percent);
-        if delivered || state != t.last_state || group.token() != t.last_group || line != t.state_line || self_changed {
+        if delivered
+            || state != t.last_state
+            || group.token() != t.last_group
+            || line != t.state_line
+            || self_changed
+        {
             thread::update(project, &t.id, |t| {
                 if delivered {
                     t.prompt_pending = false;
@@ -745,18 +925,33 @@ fn thread_pass(project: &Project, herdr: &Herdr, socket: &str, threads: &[thread
             })?;
         }
         if live.pane_exists {
-            crate::sidebar::report_pane(herdr, &t.pane_id, &crate::sidebar::thread_display(t), slug, group);
+            crate::sidebar::report_pane(
+                herdr,
+                &t.pane_id,
+                &crate::sidebar::thread_display(t),
+                slug,
+                group,
+            );
         }
     }
     Ok(pass)
 }
 
 /// Launches pending threads whose pane is at a shell prompt. At most one
-/// `agent start` per machine per tick (`may_start`), and never a start and a
+/// `agent start` per machine per tick, and never a start and a
 /// prompt for the same pane in one tick: prompts only go to agents that were
 /// already listed before any start.
-fn launch_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, threads: &[thread::Thread], agents: &[Agent], panes: &[Pane], may_start: &mut bool, errors: &mut Vec<anyhow::Error>) {
+fn launch_pass(
+    ctx: &Ctx,
+    project: &Project,
+    herdr: &Herdr,
+    threads: &[thread::Thread],
+    agents: &[Agent],
+    panes: &[Pane],
+    errors: &mut Vec<anyhow::Error>,
+) {
     let now = jiff::Timestamp::now();
+    let mut may_start = true;
     for t in threads {
         if t.status != thread::Status::Open || !t.prompt_pending {
             continue;
@@ -768,15 +963,19 @@ fn launch_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, threads: &[thread::T
         if t.launch_attempts >= thread::MAX_LAUNCH_ATTEMPTS {
             let failed = thread::update(project, &t.id, |t| {
                 t.status = thread::Status::Failed;
-                t.error = format!("no `{}` agent appeared in the pane after {} launch attempts", t.agent, thread::MAX_LAUNCH_ATTEMPTS);
+                t.error = format!(
+                    "no `{}` agent appeared in the pane after {} launch attempts",
+                    t.agent,
+                    thread::MAX_LAUNCH_ATTEMPTS
+                );
             });
             errors.extend(failed.err());
             continue;
         }
-        if !*may_start {
+        if !may_start {
             continue;
         }
-        *may_start = false;
+        may_start = false;
         let launched = (|| -> Result<()> {
             thread::update(project, &t.id, |t| {
                 t.launch_attempts += 1;
@@ -785,7 +984,8 @@ fn launch_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, threads: &[thread::T
             let safety = project.safety(&ctx.config_dir)?;
             let config = crate::profiles::load(&ctx.config_dir)?;
             let (settings, _) = project.read_project_md()?;
-            let legacy = crate::profiles::legacy_agent(&config, &settings, crate::profiles::Role::Thread);
+            let legacy =
+                crate::profiles::legacy_agent(&config, &settings, crate::profiles::Role::Thread);
             let (kind, mut args) = if t.profile.is_empty() {
                 // A thread started before profiles: the built-in of its kind
                 // plus its stored model flag, which passes the same model-only
@@ -798,27 +998,58 @@ fn launch_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, threads: &[thread::T
                         t.id,
                         refused.join(" "),
                     );
-                    inbox::write(project, "thread-state", &t.id, "launched without some flags", &summary, "")?;
+                    inbox::write(
+                        project,
+                        "thread-state",
+                        &t.id,
+                        "launched without some flags",
+                        &summary,
+                        "",
+                    )?;
                 }
-                let builtin = config.get(&t.agent).filter(|p| p.builtin).map(|p| crate::profiles::launch_args(&p, &safety.thread_agent_args, &legacy)).unwrap_or_default();
+                let builtin = config
+                    .get(&t.agent)
+                    .filter(|p| p.builtin)
+                    .map(|p| crate::profiles::launch_args(&p, &safety.thread_agent_args, &legacy))
+                    .unwrap_or_default();
                 (t.agent.clone(), [builtin, model].concat())
             } else if t.remote_profile {
                 // Its machine's own definition, stored at start; the name is
                 // checked against this project's allow-list again.
-                if let Err(error) = crate::profiles::check_allowed(&config, &safety, crate::profiles::Role::Thread, &t.profile, &project.slug) {
+                if let Err(error) = crate::profiles::check_allowed(
+                    &config,
+                    &safety,
+                    crate::profiles::Role::Thread,
+                    &t.profile,
+                    &project.slug,
+                ) {
                     let message = format!("{error:#}");
                     thread::update(project, &t.id, |t| {
                         t.status = thread::Status::Failed;
                         t.error = message.clone();
                     })?;
-                    inbox::write(project, "thread-state", &t.id, "not launched", &format!("{}: not launched: {message}", t.id), "")?;
+                    inbox::write(
+                        project,
+                        "thread-state",
+                        &t.id,
+                        "not launched",
+                        &format!("{}: not launched: {message}", t.id),
+                        "",
+                    )?;
                     return Ok(());
                 }
                 (t.agent.clone(), t.profile_args.clone())
             } else {
                 // The profile is looked up and checked against the allow-list
                 // again: one the user removed or disallowed since does not launch.
-                let profile = match crate::profiles::resolve(&config, &safety, &settings, crate::profiles::Role::Thread, Some(&t.profile), &project.slug) {
+                let profile = match crate::profiles::resolve(
+                    &config,
+                    &safety,
+                    &settings,
+                    crate::profiles::Role::Thread,
+                    Some(&t.profile),
+                    &project.slug,
+                ) {
                     Ok(profile) => profile,
                     Err(error) => {
                         let message = format!("{error:#}");
@@ -826,7 +1057,14 @@ fn launch_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, threads: &[thread::T
                             t.status = thread::Status::Failed;
                             t.error = message.clone();
                         })?;
-                        inbox::write(project, "thread-state", &t.id, "not launched", &format!("{}: not launched: {message}", t.id), "")?;
+                        inbox::write(
+                            project,
+                            "thread-state",
+                            &t.id,
+                            "not launched",
+                            &format!("{}: not launched: {message}", t.id),
+                            "",
+                        )?;
                         return Ok(());
                     }
                 };
@@ -834,23 +1072,35 @@ fn launch_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, threads: &[thread::T
                     let agent = profile.agent().to_string();
                     thread::update(project, &t.id, |t| t.agent = agent)?;
                 }
-                (profile.agent().to_string(), crate::profiles::launch_args(&profile, &safety.thread_agent_args, &legacy))
+                (
+                    profile.agent().to_string(),
+                    crate::profiles::launch_args(&profile, &safety.thread_agent_args, &legacy),
+                )
             };
             if !t.is_remote() {
                 args = crate::profiles::expand_home(&args, &ctx.env.home);
             }
             let args = safety.launch_args(&kind, &args);
-            herdr.on_machine(&t.machine).agent_start(&t.agent_name, &kind, &t.pane_id, &args)?;
+            herdr
+                .on_machine(&t.machine)
+                .agent_start(&t.agent_name, &kind, &t.pane_id, &args)?;
             Ok(())
         })();
-        errors.extend(launched.err().map(|e| e.context(format!("{}: launch", t.id))));
+        errors.extend(
+            launched
+                .err()
+                .map(|e| e.context(format!("{}: launch", t.id))),
+        );
     }
 }
 
 fn open_threads(project: &Project, remote: bool) -> Vec<thread::Thread> {
     thread::list(project)
         .into_iter()
-        .filter(|t| t.is_remote() == remote && matches!(t.status, thread::Status::Open | thread::Status::Starting))
+        .filter(|t| {
+            t.is_remote() == remote
+                && matches!(t.status, thread::Status::Open | thread::Status::Starting)
+        })
         .collect()
 }
 
@@ -858,7 +1108,9 @@ fn open_threads(project: &Project, remote: bool) -> Vec<thread::Thread> {
 /// no record and no agent works in its folder: then no state is read, so
 /// nothing is ever reported as gone.
 fn tick_cheap(ctx: &Ctx, project: &Project, sessions: &mut Sessions) -> Result<Option<Seen>> {
-    let recorded = project.coordinator().filter(|r| !r.socket.is_empty() && Path::new(&r.socket).exists());
+    let recorded = project
+        .coordinator()
+        .filter(|r| !r.socket.is_empty() && Path::new(&r.socket).exists());
     let record = match recorded {
         Some(record) => record,
         None => match discover_record(ctx, project, sessions)? {
@@ -893,22 +1145,51 @@ fn tick_cheap(ctx: &Ctx, project: &Project, sessions: &mut Sessions) -> Result<O
         })?;
     }
     for c in &coordinators {
-        let terminal = agents.iter().find(|a| a.pane_id == c.pane_id).map(|a| a.terminal_id.clone()).unwrap_or_default();
+        let terminal = agents
+            .iter()
+            .find(|a| a.pane_id == c.pane_id)
+            .map(|a| a.terminal_id.clone())
+            .unwrap_or_default();
         let report = crate::progress::self_report(&ctx.root, &record.socket, &c.pane_id, &terminal);
         let (group, _) = coordinator::row_state(c, report.as_ref());
-        crate::sidebar::report_pane(&herdr, &c.pane_id, &crate::sidebar::coordinator_display(project), slug, group);
+        crate::sidebar::report_pane(
+            &herdr,
+            &c.pane_id,
+            &crate::sidebar::coordinator_display(project),
+            slug,
+            group,
+        );
     }
 
-    let pass = thread_pass(project, &herdr, &record.socket, &open_threads(project, false), &agents, &panes, None)?;
+    let pass = thread_pass(
+        project,
+        &herdr,
+        &record.socket,
+        &open_threads(project, false),
+        &agents,
+        &panes,
+        None,
+    )?;
     // The project's part of the sidebar grouping.
-    sessions.parts.entry(record.socket.clone()).or_default().insert(slug.clone(), part(ctx, project, &record, &coordinators, &agents, false));
+    sessions
+        .parts
+        .entry(record.socket.clone())
+        .or_default()
+        .insert(
+            slug.clone(),
+            part(ctx, project, &record, &coordinators, &agents, false),
+        );
     // Progress records of panes that are gone are dropped; a new agent in a
     // reused pane id is told apart by its terminal id.
     let live_ids: Vec<String> = panes.iter().map(|p| p.pane_id.clone()).collect();
     crate::progress::prune(&ctx.root, &record.socket, &live_ids);
     first_error = first_error.or(pass.error);
     let coordinator_recorded = usize::from(!record.pane_id.is_empty());
-    let coordinator_missing = usize::from(coordinator_recorded == 1 && coordinators.is_empty() && !panes.iter().any(|p| coordinator::pane_matches(&record, p)));
+    let coordinator_missing = usize::from(
+        coordinator_recorded == 1
+            && coordinators.is_empty()
+            && !panes.iter().any(|p| coordinator::pane_matches(&record, p)),
+    );
     let recorded_panes = pass.recorded_panes + coordinator_recorded;
     let missing_panes = pass.missing_panes + coordinator_missing;
 
@@ -944,15 +1225,39 @@ fn tick_cheap(ctx: &Ctx, project: &Project, sessions: &mut Sessions) -> Result<O
 /// pass, copies and launches as for local threads, with its own allowance of
 /// one start per tick. If the machine cannot be
 /// reached nothing is read: no state, no group change, no copy, no inbox item.
-fn remote_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, machine: &str, threads: &[thread::Thread], copy_notes: &mut std::collections::BTreeMap<String, Vec<String>>, errors: &mut Vec<anyhow::Error>) -> Result<Vec<Transition>, String> {
+fn remote_pass(
+    ctx: &Ctx,
+    project: &Project,
+    herdr: &Herdr,
+    machine: &str,
+    threads: &[thread::Thread],
+    copy_notes: &mut std::collections::BTreeMap<String, Vec<String>>,
+    errors: &mut Vec<anyhow::Error>,
+) -> Result<Vec<Transition>, String> {
     let remote = herdr.on_machine(machine);
     let agents = remote.agent_list().map_err(|e| e.to_string())?;
     let panes = remote.pane_list().map_err(|e| e.to_string())?;
-    let target = crate::remote::ssh_target(ctx.runner, &ctx.env.herdr_bin(), &ctx.config_dir, machine).map_err(|e| format!("{e:#}"))?;
-    let dirs: Vec<(String, String)> = threads.iter().filter(|t| !t.thread_dir.is_empty()).map(|t| (t.id.clone(), t.thread_dir.clone())).collect();
-    let hashes = crate::remote::report_hashes(ctx.runner, &target, &dirs).map_err(|e| format!("{e:#}"))?;
+    let target =
+        crate::remote::ssh_target(ctx.runner, &ctx.env.herdr_bin(), &ctx.config_dir, machine)
+            .map_err(|e| format!("{e:#}"))?;
+    let dirs: Vec<(String, String)> = threads
+        .iter()
+        .filter(|t| !t.thread_dir.is_empty())
+        .map(|t| (t.id.clone(), t.thread_dir.clone()))
+        .collect();
+    let hashes =
+        crate::remote::report_hashes(ctx.runner, &target, &dirs).map_err(|e| format!("{e:#}"))?;
 
-    let pass = thread_pass(project, &remote, "", threads, &agents, &panes, Some(&hashes)).map_err(|e| format!("{e:#}"))?;
+    let pass = thread_pass(
+        project,
+        &remote,
+        "",
+        threads,
+        &agents,
+        &panes,
+        Some(&hashes),
+    )
+    .map_err(|e| format!("{e:#}"))?;
     errors.extend(pass.error);
 
     for t in threads {
@@ -961,20 +1266,26 @@ fn remote_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, machine: &str, threa
         };
         let copied = thread::copy_home_remote(project, t, true, ctx.runner, &target);
         match copied.outcome {
-            thread::CopyOutcome::Failed(error) => errors.push(anyhow::anyhow!("{}: copy from {machine} failed: {error}", t.id)),
+            thread::CopyOutcome::Failed(error) => errors.push(anyhow::anyhow!(
+                "{}: copy from {machine} failed: {error}",
+                t.id
+            )),
             outcome => {
                 if let thread::CopyOutcome::Partial(notes) = outcome {
                     copy_notes.insert(t.id.clone(), notes);
                 }
                 let hash = copied.report_hash.unwrap_or_else(|| hash.clone());
-                errors.extend(thread::update(project, &t.id, |t| {
-                    t.report_hash = hash;
-                    t.last_report_change = project::now();
-                }).err());
+                errors.extend(
+                    thread::update(project, &t.id, |t| {
+                        t.report_hash = hash;
+                        t.last_report_change = project::now();
+                    })
+                    .err(),
+                );
             }
         }
     }
-    launch_pass(ctx, project, herdr, threads, &agents, &panes, &mut true, errors);
+    launch_pass(ctx, project, herdr, threads, &agents, &panes, errors);
     Ok(pass.transitions)
 }
 
@@ -985,7 +1296,6 @@ fn tick_slow(ctx: &Ctx, project: &Project, seen: &Seen, memory: &mut Memory) -> 
     let mut copy_notes: std::collections::BTreeMap<String, Vec<String>> = Default::default();
     let herdr = Herdr::new(ctx.env.herdr_bin(), &seen.socket, ctx.runner);
     let now = jiff::Timestamp::now();
-    let mut may_start = true;
     let mut transitions = seen.transitions.clone();
 
     // Local threads: copy home when the report changed, then launches.
@@ -996,7 +1306,9 @@ fn tick_slow(ctx: &Ctx, project: &Project, seen: &Seen, memory: &mut Memory) -> 
         {
             let copied = thread::copy_home_local(project, t, true);
             match copied.outcome {
-                thread::CopyOutcome::Failed(error) => errors.push(anyhow::anyhow!("{}: copy failed: {error}", t.id)),
+                thread::CopyOutcome::Failed(error) => {
+                    errors.push(anyhow::anyhow!("{}: copy failed: {error}", t.id))
+                }
                 outcome => {
                     if let thread::CopyOutcome::Partial(notes) = outcome {
                         copy_notes.insert(t.id.clone(), notes);
@@ -1010,7 +1322,15 @@ fn tick_slow(ctx: &Ctx, project: &Project, seen: &Seen, memory: &mut Memory) -> 
             }
         }
     }
-    launch_pass(ctx, project, &herdr, &local, &seen.agents, &seen.panes, &mut may_start, &mut errors);
+    launch_pass(
+        ctx,
+        project,
+        &herdr,
+        &local,
+        &seen.agents,
+        &seen.panes,
+        &mut errors,
+    );
 
     // Remote threads, one machine at a time, every fourth tick.
     let mut state = steps::load_state(project);
@@ -1023,9 +1343,22 @@ fn tick_slow(ctx: &Ctx, project: &Project, seen: &Seen, memory: &mut Memory) -> 
         if !memory.machine_is_due(&machine) {
             continue;
         }
-        let threads: Vec<thread::Thread> = remote_threads.iter().filter(|t| t.machine == machine).cloned().collect();
-        let outcome = remote_pass(ctx, project, &herdr, &machine, &threads, &mut copy_notes, &mut errors);
-        let event = memory.record_machine(&machine, outcome.as_ref().err().map(String::as_str), now);
+        let threads: Vec<thread::Thread> = remote_threads
+            .iter()
+            .filter(|t| t.machine == machine)
+            .cloned()
+            .collect();
+        let outcome = remote_pass(
+            ctx,
+            project,
+            &herdr,
+            &machine,
+            &threads,
+            &mut copy_notes,
+            &mut errors,
+        );
+        let event =
+            memory.record_machine(&machine, outcome.as_ref().err().map(String::as_str), now);
         match outcome {
             Ok(found) => transitions.extend(found),
             Err(error) => errors.push(anyhow::anyhow!("{machine}: unreachable this tick: {error}")),
@@ -1034,7 +1367,17 @@ fn tick_slow(ctx: &Ctx, project: &Project, seen: &Seen, memory: &mut Memory) -> 
     }
 
     let notifier = crate::notify::Notifier::new(ctx, project);
-    errors.extend(steps::write_thread_items(project, &mut state, &transitions, seen.session_lost, &copy_notes, &notifier).err());
+    errors.extend(
+        steps::write_thread_items(
+            project,
+            &mut state,
+            &transitions,
+            seen.session_lost,
+            &copy_notes,
+            &notifier,
+        )
+        .err(),
+    );
     errors.extend(steps::pull_requests(ctx, project, &mut state, memory, now));
     errors.extend(steps::resolve_merged(ctx, project, &mut state, now));
     errors.extend(routine_pass(ctx, project, &mut state, seen.coordinator));
@@ -1066,14 +1409,29 @@ mod tests {
 
     #[test]
     fn start_decisions() {
-        assert_eq!(decide_start(&LockState::Free, "v1", false), StartAction::Spawn);
-        assert_eq!(decide_start(&LockState::Free, "v1", true), StartAction::Spawn);
+        assert_eq!(
+            decide_start(&LockState::Free, "v1", false),
+            StartAction::Spawn
+        );
+        assert_eq!(
+            decide_start(&LockState::Free, "v1", true),
+            StartAction::Spawn
+        );
         assert_eq!(decide_start(&held("v1"), "v1", false), StartAction::Nothing);
-        assert_eq!(decide_start(&held("v0"), "v1", false), StartAction::StopThenSpawn);
+        assert_eq!(
+            decide_start(&held("v0"), "v1", false),
+            StartAction::StopThenSpawn
+        );
         // A stop in progress: finish it, then spawn.
-        assert_eq!(decide_start(&held("v1"), "v1", true), StartAction::StopThenSpawn);
+        assert_eq!(
+            decide_start(&held("v1"), "v1", true),
+            StartAction::StopThenSpawn
+        );
         assert_eq!(decide_start(&held(""), "v1", false), StartAction::Nothing);
-        assert_eq!(decide_start(&held(""), "v1", true), StartAction::StopThenSpawn);
+        assert_eq!(
+            decide_start(&held(""), "v1", true),
+            StartAction::StopThenSpawn
+        );
     }
 
     #[test]
@@ -1082,7 +1440,13 @@ mod tests {
         let missing = home.path().join("root");
         let env = Env::for_test(home.path(), &[]);
         let runner = FakeRunner::new();
-        let ctx = Ctx { env: &env, root: missing.clone(), config_dir: home.path().join("cfg"), runner: &runner, detached_ticker: true };
+        let ctx = Ctx {
+            env: &env,
+            root: missing.clone(),
+            config_dir: home.path().join("cfg"),
+            runner: &runner,
+            detached_ticker: true,
+        };
         start(&ctx).unwrap();
         assert!(!missing.exists());
         run(&ctx).unwrap();
@@ -1098,7 +1462,12 @@ mod tests {
     fn lock_probe_sees_a_holder_and_its_version() {
         let root = tempfile::tempdir().unwrap();
         assert_eq!(lock_state(root.path()), LockState::Free);
-        let file = File::options().create(true).write(true).truncate(false).open(lock_path(root.path())).unwrap();
+        let file = File::options()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(lock_path(root.path()))
+            .unwrap();
         file.lock().unwrap();
         let info = Info {
             version: "v9".into(),
@@ -1112,7 +1481,11 @@ mod tests {
             LockState::Held(read) => assert_eq!(read, info),
             LockState::Free => panic!("lock should be held"),
         }
-        assert_eq!(file.metadata().unwrap().len(), 0, "the locked token must not contain metadata");
+        assert_eq!(
+            file.metadata().unwrap().len(),
+            0,
+            "the locked token must not contain metadata"
+        );
         drop(file);
         // Another test may fork a child at this instant; until that child execs,
         // it shares the locked descriptor. Real callers poll too (`ticker stop`).
@@ -1126,31 +1499,61 @@ mod tests {
     #[test]
     fn initialization_ignores_missing_or_dead_previous_metadata() {
         let root = tempfile::tempdir().unwrap();
-        let file = File::options().create(true).write(true).truncate(false).open(lock_path(root.path())).unwrap();
+        let file = File::options()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(lock_path(root.path()))
+            .unwrap();
         file.lock().unwrap();
-        assert_eq!(decide_start(&lock_state(root.path()), "new", false), StartAction::Nothing);
-        project::write_json(&info_path(root.path()), &Info {
-            version: "old".into(),
-            pid: u32::MAX,
-            ..Info::default()
-        }).unwrap();
-        assert_eq!(decide_start(&lock_state(root.path()), "new", false), StartAction::Nothing);
-        project::write_json(&info_path(root.path()), &Info {
-            version: "new".into(),
-            pid: std::process::id(),
-            started: project::now(),
-            ..Info::default()
-        }).unwrap();
+        assert_eq!(
+            decide_start(&lock_state(root.path()), "new", false),
+            StartAction::Nothing
+        );
+        project::write_json(
+            &info_path(root.path()),
+            &Info {
+                version: "old".into(),
+                pid: u32::MAX,
+                ..Info::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            decide_start(&lock_state(root.path()), "new", false),
+            StartAction::Nothing
+        );
+        project::write_json(
+            &info_path(root.path()),
+            &Info {
+                version: "new".into(),
+                pid: std::process::id(),
+                started: project::now(),
+                ..Info::default()
+            },
+        )
+        .unwrap();
         for _ in 0..3 {
-            assert_eq!(decide_start(&lock_state(root.path()), "new", false), StartAction::Nothing);
+            assert_eq!(
+                decide_start(&lock_state(root.path()), "new", false),
+                StartAction::Nothing
+            );
         }
-        assert_eq!(decide_start(&lock_state(root.path()), "new", true), StartAction::StopThenSpawn);
+        assert_eq!(
+            decide_start(&lock_state(root.path()), "new", true),
+            StartAction::StopThenSpawn
+        );
     }
 
     #[test]
     fn stop_waits_for_holder_then_clears_the_marker() {
         let root = tempfile::tempdir().unwrap();
-        let file = File::options().create(true).write(true).truncate(false).open(lock_path(root.path())).unwrap();
+        let file = File::options()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(lock_path(root.path()))
+            .unwrap();
         file.lock().unwrap();
         let path = root.path().to_path_buf();
         let holder = std::thread::spawn(move || {
@@ -1206,7 +1609,12 @@ mod tests {
             })
             .unwrap();
         let env = Env::for_test(home.path(), &[]);
-        Fixture { _home: home, env, root, project }
+        Fixture {
+            _home: home,
+            env,
+            root,
+            project,
+        }
     }
 
     fn with_cwd(json: &str, fixture: &Fixture) -> String {
@@ -1225,7 +1633,13 @@ mod tests {
         runner.on("agent list", ok(&two));
         runner.on("pane list", ok(&with_cwd(PANE, &f)));
         runner.on("report-metadata", ok("{}"));
-        let ctx = Ctx { env: &f.env, root: f.root.clone(), config_dir: f.root.join("cfg"), runner: &runner, detached_ticker: false };
+        let ctx = Ctx {
+            env: &f.env,
+            root: f.root.clone(),
+            config_dir: f.root.join("cfg"),
+            runner: &runner,
+            detached_ticker: false,
+        };
         assert!(tick_project(&ctx, &f.project).unwrap());
         assert_eq!(runner.count("agent prompt"), 0);
         assert_eq!(runner.count("agent start"), 0);
@@ -1247,7 +1661,13 @@ mod tests {
         let runner = FakeRunner::new();
         runner.on("agent list", ok(NO_AGENTS));
         runner.on("pane list", ok(&with_cwd(PANE, &f)));
-        let ctx = Ctx { env: &f.env, root: f.root.clone(), config_dir: f.root.join("cfg"), runner: &runner, detached_ticker: false };
+        let ctx = Ctx {
+            env: &f.env,
+            root: f.root.clone(),
+            config_dir: f.root.join("cfg"),
+            runner: &runner,
+            detached_ticker: false,
+        };
         for _ in 0..3 {
             let _ = tick_project(&ctx, &f.project);
         }
@@ -1261,9 +1681,18 @@ mod tests {
         let f = fixture();
         let runner = FakeRunner::new();
         // Same ids, different working directory: not our pane.
-        runner.on("agent list", ok(&AGENT_READY.replace("CWD", "/somewhere/else")));
+        runner.on(
+            "agent list",
+            ok(&AGENT_READY.replace("CWD", "/somewhere/else")),
+        );
         runner.on("pane list", ok(&PANE.replace("CWD", "/somewhere/else")));
-        let ctx = Ctx { env: &f.env, root: f.root.clone(), config_dir: f.root.join("cfg"), runner: &runner, detached_ticker: false };
+        let ctx = Ctx {
+            env: &f.env,
+            root: f.root.clone(),
+            config_dir: f.root.join("cfg"),
+            runner: &runner,
+            detached_ticker: false,
+        };
         assert!(tick_project(&ctx, &f.project).unwrap());
         assert_eq!(runner.count("agent prompt"), 0);
         assert_eq!(runner.count("agent start"), 0);
@@ -1275,7 +1704,13 @@ mod tests {
         let f = fixture();
         let runner = FakeRunner::new();
         runner.on("agent list", fail(1, "connection refused"));
-        let ctx = Ctx { env: &f.env, root: f.root.clone(), config_dir: f.root.join("cfg"), runner: &runner, detached_ticker: false };
+        let ctx = Ctx {
+            env: &f.env,
+            root: f.root.clone(),
+            config_dir: f.root.join("cfg"),
+            runner: &runner,
+            detached_ticker: false,
+        };
         assert!(!tick_project(&ctx, &f.project).unwrap());
 
         // A socket file that is gone is not even called; only the default
@@ -1283,16 +1718,30 @@ mod tests {
         let gone = f.project.coordinator().unwrap().socket;
         std::fs::remove_file(&gone).unwrap();
         let runner = FakeRunner::new();
-        let ctx = Ctx { env: &f.env, root: f.root.clone(), config_dir: f.root.join("cfg"), runner: &runner, detached_ticker: false };
+        let ctx = Ctx {
+            env: &f.env,
+            root: f.root.clone(),
+            config_dir: f.root.join("cfg"),
+            runner: &runner,
+            detached_ticker: false,
+        };
         assert!(!tick_project(&ctx, &f.project).unwrap());
-        assert!(runner.calls.borrow().iter().all(|c| !c.env.iter().any(|(_, v)| *v == gone)));
+        assert!(
+            runner
+                .calls
+                .borrow()
+                .iter()
+                .all(|c| !c.env.iter().any(|(_, v)| *v == gone))
+        );
         assert_eq!(runner.count("agent list"), 0);
     }
 
     #[test]
     fn log_is_capped() {
         let dir = tempfile::tempdir().unwrap();
-        let log = Log { path: dir.path().join("log") };
+        let log = Log {
+            path: dir.path().join("log"),
+        };
         let long = "x".repeat(10_000);
         for _ in 0..150 {
             log.line(&long);
