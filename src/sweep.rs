@@ -5,6 +5,8 @@
 //! folders of long-resolved tab threads, handled inbox items older than 30
 //! days, and empty repository Spaces herdr grouped their worktrees under.
 //! `--dry-run` lists; otherwise each is removed after a confirmation.
+//! Current ownership is checked again under the project lock; branch deletion
+//! compares against the approved merged tip, never a later commit.
 //! Remote machines are left to `thread resolve`.
 
 use std::path::PathBuf;
@@ -15,7 +17,7 @@ use anyhow::{Result, bail};
 use crate::paths::Ctx;
 use crate::project::Project;
 use crate::runner::Cmd;
-use crate::thread::{self, Kind, Status, Thread};
+use crate::thread::{self, Kind, Status};
 use crate::threads;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -28,10 +30,15 @@ pub enum Orphan {
         workspace: Option<String>,
         branch: String,
         thread: Option<String>,
+        owner_workspace: Option<String>,
     },
     Branch {
         repo: String,
         branch: String,
+        id: String,
+        head_oid: String,
+        path: String,
+        workspace: String,
     },
     Tab {
         id: String,
@@ -41,6 +48,9 @@ pub enum Orphan {
     Workspace {
         id: String,
         workspace: String,
+        repo: String,
+        path: String,
+        branch: String,
     },
     Folder {
         id: String,
@@ -61,18 +71,19 @@ impl Orphan {
                 workspace,
                 ..
             } => format!(
-                "worktree {path} ({branch}){} with no open thread",
+                "worktree {path} ({branch}){}{} with no open thread",
                 if workspace.is_some() {
-                    ", workspace open"
+                    ", owning workspace "
                 } else {
                     ""
-                }
+                },
+                workspace.as_deref().unwrap_or("")
             ),
             Orphan::Branch { branch, .. } => {
                 format!("branch {branch}: its thread is resolved and its pull request merged")
             }
             Orphan::Tab { id, tab } => format!("tab {tab} of resolved thread {id}"),
-            Orphan::Workspace { id, workspace } => {
+            Orphan::Workspace { id, workspace, .. } => {
                 format!("workspace {workspace} of resolved thread {id}, its worktree already gone")
             }
             Orphan::Folder { id, path } => format!(
@@ -146,9 +157,12 @@ pub fn find(ctx: &Ctx, project: &Project) -> Vec<Orphan> {
     );
     repos.sort();
     repos.dedup();
+    let state = crate::steps::load_state(project);
     let open = |branch: &str, path: &str| {
         threads.iter().any(|t| {
-            t.status != Status::Resolved && (t.branch == branch || t.worktree_path == path)
+            t.status != Status::Resolved
+                && (t.branch == branch
+                    || crate::paths::same_dir(t.worktree_path.as_ref(), path.as_ref()))
         })
     };
     for repo in &repos {
@@ -164,25 +178,37 @@ pub fn find(ctx: &Ctx, project: &Project) -> Vec<Orphan> {
             if open(&branch, &path) {
                 continue;
             }
-            let owner = threads
-                .iter()
-                .find(|t| t.branch == branch || t.worktree_path == path);
-            if owner.is_some_and(|t| t.kept_worktree) {
-                continue; // resolved with --keep-worktree
-            }
-            // A workspace whose root is this worktree (herdr opens it there).
-            let workspace = view.as_ref().and_then(|v| {
-                v.panes
-                    .iter()
-                    .find(|p| p.cwd == path)
-                    .map(|p| p.workspace_id.clone())
+            let owner = threads.iter().find(|t| {
+                !t.is_remote()
+                    && crate::paths::same_dir(t.repo.as_ref(), repo.as_ref())
+                    && t.branch == branch
+                    && crate::paths::same_dir(t.worktree_path.as_ref(), path.as_ref())
             });
+            if owner.is_some_and(|t| t.kept_worktree)
+                || threads.iter().any(|t| {
+                    !t.is_remote()
+                        && ((crate::paths::same_dir(t.repo.as_ref(), repo.as_ref())
+                            && t.branch == branch)
+                            || crate::paths::same_dir(t.worktree_path.as_ref(), path.as_ref()))
+                        && owner.is_none_or(|owner| owner.id != t.id)
+                })
+            {
+                continue;
+            }
+            // A same-directory pane elsewhere is not this thread's workspace.
+            let workspace = owner
+                .filter(|t| crate::paths::same_dir(path.as_ref(), t.worktree_path.as_ref()))
+                .and_then(|t| {
+                    view.as_ref()
+                        .and_then(|v| threads::own_workspace(t, &v.panes))
+                });
             orphans.push(Orphan::Worktree {
                 repo: repo.clone(),
                 path,
                 workspace,
                 branch,
                 thread: owner.map(|t| t.id.clone()),
+                owner_workspace: owner.map(|t| t.workspace_id.clone()),
             });
         }
         let refs: Vec<String> = prefixes.iter().map(|p| format!("refs/heads/{p}")).collect();
@@ -195,16 +221,36 @@ pub fn find(ctx: &Ctx, project: &Project) -> Vec<Orphan> {
             if with_worktree.iter().any(|b| b == branch) {
                 continue;
             }
-            let state = crate::steps::load_state(project);
-            let merged = threads.iter().any(|t| {
-                t.branch == branch && t.status == Status::Resolved && t.pr_state.eq_ignore_ascii_case("merged")
-                    // Only when the local tip is what was merged.
-                    && state.prs.get(&t.id).is_some_and(|s| !s.head_oid.is_empty() && git(ctx, repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_some_and(|tip| tip.trim() == s.head_oid))
+            let tip = git(
+                ctx,
+                repo,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{branch}"),
+                ],
+            );
+            let owner = threads.iter().find(|t| {
+                !t.is_remote()
+                    && crate::paths::same_dir(t.repo.as_ref(), repo.as_ref())
+                    && t.branch == branch
+                    && t.status == Status::Resolved
+                    && !t.kept_worktree
+                    && t.pr_state.eq_ignore_ascii_case("merged")
+                    && state.prs.get(&t.id).is_some_and(|s| {
+                        !s.head_oid.is_empty()
+                            && tip.as_ref().is_some_and(|tip| tip.trim() == s.head_oid)
+                    })
             });
-            if merged {
+            if let Some(owner) = owner {
                 orphans.push(Orphan::Branch {
                     repo: repo.clone(),
                     branch: branch.to_string(),
+                    id: owner.id.clone(),
+                    head_oid: state.prs[&owner.id].head_oid.clone(),
+                    path: owner.worktree_path.clone(),
+                    workspace: owner.workspace_id.clone(),
                 });
             }
         }
@@ -226,6 +272,7 @@ pub fn find(ctx: &Ctx, project: &Project) -> Vec<Orphan> {
         }
         if t.kind == Kind::Worktree
             && threads::worktree_gone(t)
+            && !t.kept_worktree
             && let Some(workspace) = view
                 .as_ref()
                 .and_then(|v| threads::own_workspace(t, &v.panes))
@@ -233,6 +280,9 @@ pub fn find(ctx: &Ctx, project: &Project) -> Vec<Orphan> {
             orphans.push(Orphan::Workspace {
                 id: t.id.clone(),
                 workspace,
+                repo: t.repo.clone(),
+                path: t.worktree_path.clone(),
+                branch: t.branch.clone(),
             });
         }
         let folder = project.dir().join("threads").join(&t.id);
@@ -278,69 +328,215 @@ pub fn find(ctx: &Ctx, project: &Project) -> Vec<Orphan> {
     orphans
 }
 
+fn worktree_owner(
+    project: &Project,
+    id: &str,
+    repo: &str,
+    path: &str,
+    branch: &str,
+) -> Result<thread::Thread> {
+    let t = thread::load(project, id)?;
+    if t.status != Status::Resolved
+        || t.kept_worktree
+        || t.is_remote()
+        || t.kind != Kind::Worktree
+        || !crate::paths::same_dir(t.repo.as_ref(), repo.as_ref())
+        || !crate::paths::same_dir(t.worktree_path.as_ref(), path.as_ref())
+        || t.branch != branch
+    {
+        bail!("the thread no longer permits this cleanup");
+    }
+    Ok(t)
+}
+
 fn remove(ctx: &Ctx, project: &Project, orphan: &Orphan) -> Result<()> {
+    // Copying takes its own short-lived project locks; never nest those locks.
+    if let Orphan::Worktree {
+        repo,
+        path,
+        branch,
+        thread: Some(id),
+        ..
+    } = orphan
+    {
+        let t = worktree_owner(project, id, repo, path, branch)?;
+        let copied = threads::final_copy(ctx, project, &t);
+        if copied.outcome != thread::CopyOutcome::Complete {
+            bail!("not everything in it could be copied home first");
+        }
+    }
+    let lock = project.lock()?;
     match orphan {
         Orphan::Worktree {
             repo,
             path,
-            workspace,
+            branch,
+            workspace: planned_workspace,
             thread: owner,
-            ..
+            owner_workspace,
         } => {
-            if let Some(id) = owner {
-                let t = thread::load(project, id)?;
-                let copied = threads::final_copy(
-                    ctx,
-                    project,
-                    &Thread {
-                        thread_dir: t.thread_dir.clone(),
-                        ..t
-                    },
-                );
-                if copied.outcome != thread::CopyOutcome::Complete {
-                    bail!("not everything in it could be copied home first");
-                }
+            let owner = owner
+                .as_ref()
+                .map(|id| worktree_owner(project, id, repo, path, branch))
+                .transpose()?;
+            if owner.as_ref().map(|t| &t.workspace_id) != owner_workspace.as_ref() {
+                bail!("the recorded owning workspace changed");
             }
-            if let (Some(workspace), Some(view)) = (workspace, threads::session_view(ctx, project))
+            if thread::list(project).iter().any(|t| {
+                !t.is_remote()
+                    && ((crate::paths::same_dir(t.repo.as_ref(), repo.as_ref())
+                        && t.branch == *branch)
+                        || crate::paths::same_dir(t.worktree_path.as_ref(), path.as_ref()))
+                    && owner.as_ref().is_none_or(|owner| owner.id != t.id)
+            }) {
+                bail!("another thread now owns this worktree");
+            }
+            if !project
+                .branch_prefixes()
+                .iter()
+                .any(|p| branch.starts_with(p))
             {
-                return view
-                    .herdr
-                    .worktree_remove(workspace)
-                    .map_err(|e| anyhow::anyhow!("{e}"));
+                bail!("this branch is no longer allocated to the project");
             }
-            git(ctx, repo, &["worktree", "remove", path]).ok_or_else(|| {
-                anyhow::anyhow!("git refused to remove {path} (uncommitted changes?)")
-            })?;
-            let _ = git(ctx, repo, &["worktree", "prune"]);
+            let listed = git(ctx, repo, &["worktree", "list", "--porcelain"])
+                .ok_or_else(|| anyhow::anyhow!("could not verify the worktree's repository"))?;
+            if !parse_worktrees(&listed)
+                .iter()
+                .any(|(p, b)| b == branch && crate::paths::same_dir(p.as_ref(), path.as_ref()))
+            {
+                bail!("the planned worktree or branch changed");
+            }
+            let view = threads::session_view(ctx, project);
+            let workspace = owner.as_ref().and_then(|t| {
+                view.as_ref()
+                    .and_then(|v| threads::own_workspace(t, &v.panes))
+            });
+            if workspace != *planned_workspace {
+                bail!("the worktree's owning workspace changed");
+            }
+            threads::remove_local_worktree(
+                ctx,
+                repo,
+                path,
+                branch,
+                view.as_ref()
+                    .zip(workspace.as_deref())
+                    .map(|(view, workspace)| (&view.herdr, workspace)),
+            )?;
+            if let Some(owner) = owner {
+                thread::update_locked(project, &owner.id, &lock, |t| t.worktree_path.clear())?;
+            }
             Ok(())
         }
-        Orphan::Branch { repo, branch } => git(ctx, repo, &["branch", "-D", branch])
-            .map(|_| ())
-            .ok_or_else(|| anyhow::anyhow!("git refused to delete {branch}")),
-        Orphan::Tab { tab, .. } => {
+        Orphan::Branch {
+            repo,
+            branch,
+            id,
+            head_oid,
+            path,
+            workspace,
+        } => {
+            let t = thread::load(project, id)?;
+            if t.status != Status::Resolved
+                || t.kept_worktree
+                || t.is_remote()
+                || t.kind != Kind::Worktree
+                || !crate::paths::same_dir(t.repo.as_ref(), repo.as_ref())
+                || t.branch != *branch
+                || t.worktree_path != *path
+                || t.workspace_id != *workspace
+                || !t.pr_state.eq_ignore_ascii_case("merged")
+                || !crate::steps::load_state(project)
+                    .prs
+                    .get(id)
+                    .is_some_and(|s| s.head_oid == *head_oid)
+            {
+                bail!("the thread no longer permits this branch cleanup");
+            }
+            if thread::list(project).iter().any(|other| {
+                other.id != *id
+                    && !other.is_remote()
+                    && crate::paths::same_dir(other.repo.as_ref(), repo.as_ref())
+                    && other.branch == *branch
+            }) {
+                bail!("the branch is now in use");
+            }
+            threads::delete_local_branch(ctx, repo, branch, head_oid)
+        }
+        Orphan::Tab { id, tab } => {
+            let t = thread::load(project, id)?;
             let view = threads::session_view(ctx, project)
                 .ok_or_else(|| anyhow::anyhow!("the session is not reachable"))?;
+            if t.status != Status::Resolved
+                || t.is_remote()
+                || !matches!(t.kind, Kind::Tab | Kind::Checkout)
+                || t.tab_id != *tab
+                || !view
+                    .panes
+                    .iter()
+                    .any(|p| thread::pane_matches(&t, p) && p.tab_id == *tab)
+            {
+                bail!("the thread no longer owns this resolved tab");
+            }
             view.herdr
                 .call(&["tab", "close", tab], crate::herdr::CALL_TIMEOUT)
                 .map(|_| ())
                 .map_err(|e| anyhow::anyhow!("{e}"))
         }
-        Orphan::Workspace { id, workspace } => {
+        Orphan::Workspace {
+            id,
+            workspace,
+            repo,
+            path,
+            branch,
+        } => {
+            let t = worktree_owner(project, id, repo, path, branch)?;
             let view = threads::session_view(ctx, project)
                 .ok_or_else(|| anyhow::anyhow!("the session is not reachable"))?;
+            if !threads::worktree_gone(&t)
+                || threads::own_workspace(&t, &view.panes).as_ref() != Some(workspace)
+            {
+                bail!("the gone worktree or its owning workspace changed");
+            }
             view.herdr
                 .call(
                     &["workspace", "close", workspace],
                     crate::herdr::CALL_TIMEOUT,
                 )
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-            thread::update(project, id, |t| t.worktree_path.clear())?;
+            if !threads::worktree_gone(&t) {
+                bail!("the worktree folder reappeared; its recorded path was kept");
+            }
+            thread::update_locked(project, id, &lock, |t| t.worktree_path.clear())?;
             Ok(())
         }
-        Orphan::Folder { path, .. } => Ok(std::fs::remove_dir_all(path)?),
+        Orphan::Folder { id, path } => {
+            let t = thread::load(project, id)?;
+            let (settings, _) = project.read_project_md()?;
+            if t.status != Status::Resolved
+                || t.is_remote()
+                || t.kind != Kind::Tab
+                || *path != project.dir().join("threads").join(id)
+                || !older_than(
+                    &t.updated,
+                    settings.auto_resolve_days.max(1),
+                    jiff::Timestamp::now(),
+                )
+                || !thread::home_report_path(project, id).is_file()
+            {
+                bail!("the thread no longer permits this working-folder cleanup");
+            }
+            Ok(std::fs::remove_dir_all(path)?)
+        }
         Orphan::Space(space) => {
             let view = threads::session_view(ctx, project)
                 .ok_or_else(|| anyhow::anyhow!("the session is not reachable"))?;
+            if !crate::spaces::empty(ctx, project, &view.herdr, true)
+                .iter()
+                .any(|current| current.id == space.id)
+            {
+                bail!("this Space is no longer empty and owned by the project");
+            }
             crate::spaces::close(&view.herdr, space).map_err(|e| anyhow::anyhow!("{e}"))
         }
         Orphan::DoneItems { .. } => {
@@ -384,12 +580,12 @@ pub fn run(ctx: &Ctx, slug: &str, dry_run: bool, yes: bool) -> Result<()> {
             Ok(()) => println!("removed: {}", orphan.describe()),
             Err(error) => {
                 failed += 1;
-                println!("kept: {} ({error:#})", orphan.describe());
+                println!("cleanup failed: {} ({error:#})", orphan.describe());
             }
         }
     }
     println!(
-        "swept `{slug}`: {} removed, {failed} kept",
+        "swept `{slug}`: {} removed, {failed} failed",
         orphans.len() - failed
     );
     Ok(())

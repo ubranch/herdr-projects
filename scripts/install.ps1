@@ -58,7 +58,7 @@ function Download-Release([string]$Version, [string]$Temporary) {
     if ($env:HERDR_PROJECTS_DOWNLOAD_URL) {
         $base = "$($env:HERDR_PROJECTS_DOWNLOAD_URL.TrimEnd('/'))/$tag"
     } else {
-        $repo = 'eliasstravik/herdr-projects'
+        $repo = 'ubranch/herdr-projects'
         if ($origin -match 'github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$') { $repo = $Matches[1] }
         $base = "https://github.com/$repo/releases/download/$tag"
     }

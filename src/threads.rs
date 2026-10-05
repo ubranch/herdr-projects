@@ -1155,30 +1155,34 @@ pub fn clean(ctx: &Ctx, project: &Project, t: &Thread, options: &Clean) -> Vec<S
                 notes.push(format!("worktree kept at {}: not everything in it was copied home (`--discard-uncopied` removes it anyway)", t.worktree_path));
             } else {
                 match remove_worktree(ctx, project, t, view.as_ref()) {
-                    Ok(Removal::Removed) => {
+                    Ok(Removal::Removed { workspace_closed }) => {
                         removed = true;
-                        let _ = thread::update(project, &t.id, |t| t.worktree_path.clear());
                         notes.push(format!(
-                            "worktree {} removed and its workspace closed",
-                            t.worktree_path
+                            "worktree {} removed; {}",
+                            t.worktree_path,
+                            if workspace_closed {
+                                "its workspace closed"
+                            } else {
+                                "no workspace was open on it"
+                            }
                         ));
                     }
                     Ok(Removal::AlreadyGone(closed)) => {
                         removed = true;
-                        let _ = thread::update(project, &t.id, |t| t.worktree_path.clear());
                         notes.push(format!(
                             "worktree {} was already gone; {closed}",
                             t.worktree_path
                         ));
                     }
-                    Err(error) => {
-                        notes.push(format!("worktree kept at {}: {error:#}", t.worktree_path))
-                    }
+                    Err(error) => notes.push(format!(
+                        "worktree removal failed at {}: {error:#}",
+                        t.worktree_path
+                    )),
                 }
             }
             if !t.branch.is_empty() {
                 if merged && removed {
-                    match delete_branch(ctx, t, &merged_head) {
+                    match delete_branch(ctx, project, t, &merged_head) {
                         Ok(true) => notes.push(format!(
                             "branch {} deleted (its pull request is merged)",
                             t.branch
@@ -1193,7 +1197,7 @@ pub fn clean(ctx: &Ctx, project: &Project, t: &Thread, options: &Clean) -> Vec<S
                     ));
                 } else {
                     notes.push(format!(
-                        "branch {} kept: its worktree is still there",
+                        "branch {} kept: its worktree was not removed",
                         t.branch
                     ));
                 }
@@ -1289,23 +1293,50 @@ fn last_pr_lookup(ctx: &Ctx, project: &Project, t: &Thread) -> Option<crate::pr:
 /// Deletes the local branch only when its tip is the pull request's merged
 /// head: a commit made after the merge and never pushed keeps the branch.
 /// `false`: there was no such branch left to delete.
-fn delete_branch(ctx: &Ctx, t: &Thread, head: &str) -> Result<bool> {
+fn delete_branch(ctx: &Ctx, project: &Project, t: &Thread, head: &str) -> Result<bool> {
     if head.is_empty() {
         bail!("the merged pull request's head commit is not known");
     }
-    let tip = if t.is_remote() {
-        let target = remote::ssh_target(
+    let target = if t.is_remote() {
+        Some(remote::ssh_target(
             ctx.runner,
             &ctx.env.herdr_bin(),
             &ctx.config_dir,
             &t.machine,
-        )?;
+        )?)
+    } else {
+        None
+    };
+    let _lock = project.lock()?;
+    let current = thread::load(project, &t.id)?;
+    if current.status != Status::Resolved
+        || current.kept_worktree
+        || current.kind != Kind::Worktree
+        || !current.pr_state.eq_ignore_ascii_case("merged")
+        || current.machine != t.machine
+        || current.branch != t.branch
+        || current.repo != t.repo
+        || current.workspace_id != t.workspace_id
+        || !current.worktree_path.is_empty()
+    {
+        bail!("the thread no longer permits this branch cleanup");
+    }
+    if thread::list(project).iter().any(|other| {
+        other.id != t.id
+            && other.machine == t.machine
+            && other.repo == t.repo
+            && other.branch == t.branch
+    }) {
+        bail!("another thread now owns this branch");
+    }
+    let reference = format!("refs/heads/{}", t.branch);
+    let tip = if let Some(target) = &target {
         let script = format!(
             "cd {} && git rev-parse --verify --quiet {}",
             remote::quote(&t.repo),
-            remote::quote(&format!("refs/heads/{}", t.branch))
+            remote::quote(&reference)
         );
-        remote::ssh(ctx.runner, &target, &script, None, Duration::from_secs(20))?
+        remote::ssh(ctx.runner, target, &script, None, Duration::from_secs(20))?
             .stdout
             .trim()
             .to_string()
@@ -1329,33 +1360,64 @@ fn delete_branch(ctx: &Ctx, t: &Thread, head: &str) -> Result<bool> {
     if tip != head {
         bail!("it has commits that are not in the merged pull request");
     }
-    if t.is_remote() {
-        let target = remote::ssh_target(
-            ctx.runner,
-            &ctx.env.herdr_bin(),
-            &ctx.config_dir,
-            &t.machine,
-        )?;
+    if let Some(target) = &target {
         let script = format!(
-            "cd {} && git branch -D {}",
+            "cd {} && git for-each-ref '--format=%(worktreepath)' {}",
             remote::quote(&t.repo),
-            remote::quote(&t.branch)
+            remote::quote(&reference)
         );
-        let out = remote::ssh(ctx.runner, &target, &script, None, Duration::from_secs(20))?;
+        let out = remote::ssh(ctx.runner, target, &script, None, Duration::from_secs(20))?;
+        if !out.success() || !out.stdout.trim().is_empty() {
+            bail!("the branch is still checked out or its use could not be checked");
+        }
+        let script = format!(
+            "cd {} && git update-ref -d {} {}",
+            remote::quote(&t.repo),
+            remote::quote(&reference),
+            remote::quote(head)
+        );
+        let out = remote::ssh(ctx.runner, target, &script, None, Duration::from_secs(20))?;
         if !out.success() {
             bail!("{}", out.error_text());
         }
-        return Ok(true);
+    } else {
+        delete_local_branch(ctx, &t.repo, &t.branch, head)?;
     }
-    // `-D`: GitHub says the pull request is merged, and a squash merge leaves
-    // the branch unmerged as far as git can tell.
+    Ok(true)
+}
+
+/// The caller holds the owning project's lock and approves exactly this tip.
+pub(crate) fn delete_local_branch(ctx: &Ctx, repo: &str, branch: &str, head: &str) -> Result<()> {
+    if head.is_empty() {
+        bail!("the merged pull request's head commit is not known");
+    }
+    let root = git(
+        ctx.runner,
+        repo,
+        &["rev-parse", "--show-toplevel"],
+        GIT_TIMEOUT,
+    )?;
+    if !crate::paths::same_dir(Path::new(repo), Path::new(&root)) {
+        bail!("recorded repository is not the git root");
+    }
+    let reference = format!("refs/heads/{branch}");
+    if !git(
+        ctx.runner,
+        repo,
+        &["for-each-ref", "--format=%(worktreepath)", &reference],
+        GIT_TIMEOUT,
+    )?
+    .is_empty()
+    {
+        bail!("the branch is still checked out");
+    }
     git(
         ctx.runner,
-        &t.repo,
-        &["branch", "-D", &t.branch],
+        repo,
+        &["update-ref", "-d", &reference, head],
         GIT_TIMEOUT,
-    )
-    .map(|_| true)
+    )?;
+    Ok(())
 }
 
 /// The final report and library copy, storing the new report hash.
@@ -1388,7 +1450,9 @@ pub fn final_copy(ctx: &Ctx, project: &Project, record: &Thread) -> thread::Copi
 }
 
 pub enum Removal {
-    Removed,
+    Removed {
+        workspace_closed: bool,
+    },
     /// The folder was gone before the removal; says what became of the workspace.
     AlreadyGone(String),
 }
@@ -1414,13 +1478,14 @@ pub fn own_workspace(record: &Thread, panes: &[Pane]) -> Option<String> {
 pub fn worktree_gone(record: &Thread) -> bool {
     !record.is_remote()
         && !record.worktree_path.is_empty()
-        && !Path::new(&record.worktree_path).exists()
+        && Path::new(&record.worktree_path)
+            .try_exists()
+            .is_ok_and(|exists| !exists)
 }
 
-/// Never forces. herdr's or git's refusal (for example uncommitted changes) is
-/// reported unchanged. An open workspace goes through `herdr worktree remove
-/// --workspace`, which also closes it (checked on 0.9.1). A worktree whose
-/// folder is already gone is pruned from git and its workspace closed.
+/// Check cleanliness before closing an owned workspace, then let non-force Git
+/// check again during removal. Closing first prevents terminal respawn while
+/// Git unlinks the checkout, which can lock its root directory on Windows.
 pub fn remove_worktree(
     ctx: &Ctx,
     project: &Project,
@@ -1430,68 +1495,222 @@ pub fn remove_worktree(
     if record.worktree_path.is_empty() {
         bail!("{} has no recorded worktree", record.id);
     }
-    let _ = project;
-    if worktree_gone(record) {
-        let _ = git(
-            ctx.runner,
-            &record.repo,
-            &["worktree", "prune"],
-            GIT_TIMEOUT,
-        );
-        let closed = match view.and_then(|v| own_workspace(record, &v.panes).map(|w| (v, w))) {
-            Some((view, workspace)) => match view.herdr.call(
-                &["workspace", "close", &workspace],
-                crate::herdr::CALL_TIMEOUT,
-            ) {
-                Ok(_) => "its workspace closed".to_string(),
-                Err(error) => format!("its workspace {workspace} could not be closed ({error})"),
-            },
-            None => "no workspace was open on it".to_string(),
-        };
-        return Ok(Removal::AlreadyGone(closed));
-    }
-    if let Some(view) = view {
-        let (_, panes) = lists_for(view, record)?;
-        if let Some(workspace) = own_workspace(record, &panes) {
-            return view
-                .herdr
-                .on_machine(&record.machine)
-                .worktree_remove(&workspace)
-                .map(|_| Removal::Removed)
-                .map_err(|error| anyhow::anyhow!("{error}"));
-        }
-    }
-    if record.is_remote() {
-        let target = remote::ssh_target(
+    let target = if record.is_remote() {
+        Some(remote::ssh_target(
             ctx.runner,
             &ctx.env.herdr_bin(),
             &ctx.config_dir,
             &record.machine,
+        )?)
+    } else {
+        None
+    };
+    let lock = project.lock()?;
+    let current = thread::load(project, &record.id)?;
+    if current.status != Status::Resolved
+        || current.kept_worktree
+        || current.kind != Kind::Worktree
+        || current.machine != record.machine
+        || current.repo != record.repo
+        || current.worktree_path != record.worktree_path
+        || current.branch != record.branch
+        || current.workspace_id != record.workspace_id
+    {
+        bail!("the thread no longer permits this worktree cleanup");
+    }
+    let workspace = match view {
+        Some(view) => {
+            let panes = if record.is_remote() {
+                view.herdr.on_machine(&record.machine).pane_list()?
+            } else {
+                view.herdr.pane_list()?
+            };
+            own_workspace(&current, &panes).map(|workspace| (view, workspace))
+        }
+        None => None,
+    };
+    if worktree_gone(record) {
+        git(
+            ctx.runner,
+            &record.repo,
+            &["worktree", "prune"],
+            GIT_TIMEOUT,
         )?;
+        if !worktree_gone(&current) {
+            bail!("the worktree folder reappeared; its workspace was left open");
+        }
+        let closed = match &workspace {
+            Some((view, workspace)) => {
+                view.herdr.call(
+                    &["workspace", "close", workspace],
+                    crate::herdr::CALL_TIMEOUT,
+                )?;
+                "its workspace closed".to_string()
+            }
+            None => "no workspace was open on it".to_string(),
+        };
+        if !worktree_gone(&current) {
+            bail!("the worktree folder reappeared; its recorded path was kept");
+        }
+        thread::update_locked(project, &record.id, &lock, |t| t.worktree_path.clear())?;
+        return Ok(Removal::AlreadyGone(closed));
+    }
+    if record.is_remote() {
+        let target = target.as_ref().expect("remote thread has an SSH target");
+        if let Some((view, workspace)) = &workspace {
+            let script = format!(
+                "cd {path} || exit $?\n\
+                 root=$(git rev-parse --show-toplevel) || exit $?\n\
+                 [ \"$root\" = \"$(pwd -P)\" ] || {{ printf '%s\\n' 'recorded path is not the git worktree root' >&2; exit 1; }}\n\
+                 git status --porcelain --untracked-files=all --ignore-submodules=none",
+                path = remote::quote(&record.worktree_path),
+            );
+            let out = remote::ssh(ctx.runner, target, &script, None, remote::SSH_TIMEOUT)
+                .context("its workspace was left open: could not check the worktree")?;
+            if !out.success() {
+                bail!("its workspace was left open: {}", out.error_text());
+            }
+            if !out.stdout.trim().is_empty() {
+                bail!("it has modified or untracked files; its workspace was left open");
+            }
+            view.herdr.on_machine(&record.machine).call(
+                &["workspace", "close", workspace],
+                crate::herdr::CALL_TIMEOUT,
+            )?;
+        }
         let script = format!(
-            "cd {} && git worktree remove {} && git worktree prune",
+            "cd {} && git worktree remove {}",
             remote::quote(&record.repo),
             remote::quote(&record.worktree_path)
         );
-        let out = remote::ssh(ctx.runner, &target, &script, None, Duration::from_secs(20))?;
+        let out = remote::ssh(ctx.runner, target, &script, None, Duration::from_secs(20))
+            .with_context(|| removal_failure(workspace.is_some()))?;
         if !out.success() {
-            bail!("{}", out.error_text());
+            bail!(
+                "{}: {}",
+                removal_failure(workspace.is_some()),
+                out.error_text()
+            );
         }
-        return Ok(Removal::Removed);
+    } else {
+        remove_local_worktree(
+            ctx,
+            &record.repo,
+            &record.worktree_path,
+            &record.branch,
+            workspace
+                .as_ref()
+                .map(|(view, workspace)| (&view.herdr, workspace.as_str())),
+        )?;
+    }
+    thread::update_locked(project, &record.id, &lock, |t| t.worktree_path.clear())?;
+    Ok(Removal::Removed {
+        workspace_closed: workspace.is_some(),
+    })
+}
+
+fn removal_failure(workspace_closed: bool) -> &'static str {
+    if workspace_closed {
+        "its workspace was closed, but Git worktree removal failed"
+    } else {
+        "Git worktree removal failed"
+    }
+}
+
+/// Shared with sweep; only the caller's proven owner may be closed.
+pub fn remove_local_worktree(
+    ctx: &Ctx,
+    repo: &str,
+    path: &str,
+    branch: &str,
+    workspace: Option<(&Herdr, &str)>,
+) -> Result<()> {
+    let root = git(
+        ctx.runner,
+        path,
+        &["rev-parse", "--show-toplevel"],
+        GIT_TIMEOUT,
+    )
+    .context("could not check the worktree; its workspace was left open")?;
+    if !crate::paths::same_dir(Path::new(path), Path::new(&root)) {
+        bail!("recorded path is not the git worktree root; its workspace was left open");
+    }
+    let repo_root = git(
+        ctx.runner,
+        repo,
+        &["rev-parse", "--show-toplevel"],
+        GIT_TIMEOUT,
+    )?;
+    if !crate::paths::same_dir(Path::new(repo), Path::new(&repo_root)) {
+        bail!("recorded repository is not the git root; its workspace was left open");
+    }
+    let current_branch = git(
+        ctx.runner,
+        path,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        GIT_TIMEOUT,
+    )?;
+    if current_branch != branch {
+        bail!("the worktree's branch changed; its workspace was left open");
+    }
+    let common = git(
+        ctx.runner,
+        path,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        GIT_TIMEOUT,
+    )?;
+    let repo_common = git(
+        ctx.runner,
+        repo,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        GIT_TIMEOUT,
+    )?;
+    if !crate::paths::same_dir(Path::new(&common), Path::new(&repo_common)) {
+        bail!("the worktree belongs to another repository; its workspace was left open");
+    }
+    let git_dir = git(
+        ctx.runner,
+        path,
+        &["rev-parse", "--absolute-git-dir"],
+        GIT_TIMEOUT,
+    )?;
+    if crate::paths::same_dir(Path::new(&git_dir), Path::new(&common)) {
+        bail!(
+            "the repository's main checkout is not a linked worktree; its workspace was left open"
+        );
+    }
+    if let Some((herdr, workspace)) = workspace {
+        let status = git(
+            ctx.runner,
+            path,
+            &[
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            ],
+            GIT_TIMEOUT,
+        )
+        .context("its workspace was left open: could not check the worktree")?;
+        if !status.is_empty() {
+            bail!("it has modified or untracked files; its workspace was left open");
+        }
+        herdr.call(
+            &["workspace", "close", workspace],
+            crate::herdr::CALL_TIMEOUT,
+        )?;
     }
     git(
         ctx.runner,
-        &record.repo,
-        &["worktree", "remove", &record.worktree_path],
+        repo,
+        &["worktree", "remove", path],
         Duration::from_secs(20),
-    )?;
-    let _ = git(
-        ctx.runner,
-        &record.repo,
-        &["worktree", "prune"],
-        GIT_TIMEOUT,
-    );
-    Ok(Removal::Removed)
+    )
+    .with_context(|| removal_failure(workspace.is_some()))?;
+    if Path::new(path).try_exists()? {
+        bail!("the worktree folder still exists after Git removal; its recorded path was kept");
+    }
+    Ok(())
 }
 
 /// A thread with its live state and group, for `thread list`, `thread show`

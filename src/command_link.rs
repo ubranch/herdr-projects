@@ -56,6 +56,148 @@ fn marker_path(binary: &Path) -> PathBuf {
 }
 
 #[cfg(windows)]
+const LOCK_SIGNATURE: &[u8] = b"herdr-projects command transaction lock\n";
+
+#[cfg(windows)]
+fn plain_file(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.is_file()
+        && metadata.file_attributes()
+            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+            == 0
+}
+
+#[cfg(windows)]
+fn move_new(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    // No REPLACE_EXISTING: publication and restoration never clobber a new owner.
+    if unsafe {
+        windows_sys::Win32::Storage::FileSystem::MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            0,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Shared with link-command.ps1: a persistent signed, non-reparse token, opened
+/// without delete sharing and exclusively locked at offset 0 for u64::MAX bytes.
+/// Never remove the token: existing waiters must continue to lock the same file.
+#[cfg(windows)]
+fn transaction_lock(command: &Path) -> Result<std::fs::File> {
+    use std::io::{Read, Write};
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    let path = command.with_file_name(".herdr-projects-command.lock");
+    let mut options = std::fs::File::options();
+    options
+        .read(true)
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let mut file = match options.open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos();
+            let temporary = path.with_file_name(format!(
+                ".herdr-projects-command.{}.{nonce}.lock.tmp",
+                std::process::id()
+            ));
+            let mut staged = std::fs::File::options()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            let result = (|| -> std::io::Result<()> {
+                staged.write_all(LOCK_SIGNATURE)?;
+                staged.sync_all()?;
+                drop(staged);
+                match move_new(&temporary, &path) {
+                    Err(_) if std::fs::symlink_metadata(&path).is_ok() => Ok(()),
+                    result => result,
+                }
+            })();
+            let _ = std::fs::remove_file(&temporary);
+            result?;
+            options.open(&path)?
+        }
+        Err(error) => return Err(error.into()),
+    };
+    anyhow::ensure!(
+        plain_file(&file.metadata()?),
+        "foreign command lock: {}",
+        path.display()
+    );
+    file.lock()
+        .with_context(|| format!("could not lock {}", path.display()))?;
+    let mut signature = [0; LOCK_SIGNATURE.len()];
+    anyhow::ensure!(
+        file.metadata()?.len() == LOCK_SIGNATURE.len() as u64
+            && file.read_exact(&mut signature).is_ok()
+            && signature.as_slice() == LOCK_SIGNATURE,
+        "foreign command lock: {}",
+        path.display()
+    );
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn file_identity(path: &Path) -> Result<(u32, u32, u32)> {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle,
+    };
+    let file = std::fs::File::options()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    anyhow::ensure!(
+        plain_file(&file.metadata()?),
+        "not a regular file: {}",
+        path.display()
+    );
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok((
+        info.dwVolumeSerialNumber,
+        info.nFileIndexHigh,
+        info.nFileIndexLow,
+    ))
+}
+
+#[cfg(windows)]
+fn marker_snapshot(command: &Path) -> Result<Option<Vec<u8>>> {
+    let marker = marker_path(command);
+    match std::fs::symlink_metadata(&marker) {
+        Ok(metadata) => {
+            anyhow::ensure!(
+                plain_file(&metadata),
+                "foreign command marker: {}",
+                marker.display()
+            );
+            Ok(Some(std::fs::read(marker)?))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(windows)]
 fn file_hash(path: &Path) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
     let mut file = std::fs::File::open(path)?;
@@ -66,7 +208,9 @@ fn file_hash(path: &Path) -> std::io::Result<String> {
 
 #[cfg(windows)]
 fn managed_copy(binary: &Path) -> Option<InstalledCommand> {
-    if !std::fs::symlink_metadata(binary).is_ok_and(|meta| meta.is_file()) {
+    if !std::fs::symlink_metadata(binary).is_ok_and(|meta| plain_file(&meta))
+        || !std::fs::symlink_metadata(marker_path(binary)).is_ok_and(|meta| plain_file(&meta))
+    {
         return None;
     }
     let marker: InstalledCommand = crate::project::read_json(&marker_path(binary))?;
@@ -154,47 +298,83 @@ pub fn ensure(env: &Env, binary: &Path) -> Result<State> {
 
 #[cfg(windows)]
 pub fn ensure(env: &Env, binary: &Path) -> Result<State> {
-    let found = state(env, binary);
-    if !matches!(found, State::Missing | State::Stale(_)) {
-        return Ok(found);
+    if state(env, binary) == State::Ours {
+        return Ok(State::Ours);
     }
     let command = link_path(env);
     let dir = bin_dir(env);
     std::fs::create_dir_all(&dir).with_context(|| format!("could not create {}", dir.display()))?;
+    let _lock = transaction_lock(&command)?;
+    let found = state(env, binary);
+    if !matches!(found, State::Missing | State::Stale(_)) {
+        return Ok(found);
+    }
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_nanos();
     let tmp = dir.join(format!(".{NAME}.{}.{}.tmp.exe", std::process::id(), nonce));
+    let temporary_marker = tmp.with_extension("json");
     let previous = dir.join(format!(
         ".{NAME}.{}.{}.previous.exe",
         std::process::id(),
         nonce
     ));
-    let result = (|| -> Result<()> {
+    let mut command_staged = false;
+    let mut marker_staged = false;
+    let result = (|| -> Result<State> {
+        use std::io::Write;
+        std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        command_staged = true;
         std::fs::copy(binary, &tmp)?;
         let marker = InstalledCommand {
             binary: crate::paths::canonicalize(binary)?,
             sha256: file_hash(&tmp)?,
         };
+        let mut staged_marker = std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_marker)?;
+        marker_staged = true;
+        serde_json::to_writer(&mut staged_marker, &marker)?;
+        staged_marker.write_all(b"\n")?;
+        staged_marker.sync_all()?;
+        drop(staged_marker);
+        let published_identity = file_identity(&tmp)?;
+        // Staging can take time; never publish over a command changed meanwhile.
+        let found = state(env, binary);
+        if !matches!(found, State::Missing | State::Stale(_)) {
+            return Ok(found);
+        }
+        let previous_marker = marker_snapshot(&command)?;
         let replaced = matches!(found, State::Stale(_));
         if replaced {
-            std::fs::rename(&command, &previous)?;
+            move_new(&command, &previous)?;
         }
-        if let Err(error) = std::fs::rename(&tmp, &command) {
+        if let Err(error) = move_new(&tmp, &command) {
             if replaced {
-                std::fs::rename(&previous, &command)
+                move_new(&previous, &command)
                     .with_context(|| format!("could not restore {}", command.display()))?;
             }
             return Err(error.into());
         }
-        if let Err(error) = crate::project::write_json(&marker_path(&command), &marker) {
+        if let Err(error) = std::fs::rename(&temporary_marker, marker_path(&command)) {
+            anyhow::ensure!(
+                file_identity(&command).ok() == Some(published_identity)
+                    && file_hash(&command).ok().as_deref() == Some(marker.sha256.as_str())
+                    && marker_snapshot(&command).ok().as_ref() == Some(&previous_marker),
+                "could not publish command marker: {error}; command or marker changed; previous command retained at {}",
+                previous.display()
+            );
             std::fs::remove_file(&command)
                 .with_context(|| format!("could not roll back {}", command.display()))?;
             if replaced {
-                std::fs::rename(&previous, &command)
+                move_new(&previous, &command)
                     .with_context(|| format!("could not restore {}", command.display()))?;
             }
-            return Err(error);
+            return Err(error.into());
         }
         if replaced && let Err(error) = std::fs::remove_file(&previous) {
             eprintln!(
@@ -202,13 +382,15 @@ pub fn ensure(env: &Env, binary: &Path) -> Result<State> {
                 previous.display()
             );
         }
-        Ok(())
+        Ok(found)
     })();
-    if result.is_err() {
+    if command_staged {
         let _ = std::fs::remove_file(&tmp);
     }
-    result.with_context(|| format!("could not install {}", command.display()))?;
-    Ok(found)
+    if marker_staged {
+        let _ = std::fs::remove_file(&temporary_marker);
+    }
+    result.with_context(|| format!("could not install {}", command.display()))
 }
 
 /// What a shell with `path_var` runs for `herdr-projects`, if anything.
@@ -548,6 +730,180 @@ mod windows_tests {
             installed_source(&link_path(&env)).unwrap(),
             crate::paths::canonicalize(&moved).unwrap()
         );
+    }
+
+    #[test]
+    fn native_install_script_refreshes_owned_command_and_preserves_foreign_copies() {
+        let system_root = std::env::var_os("SystemRoot").expect("Windows has SystemRoot");
+        let mut shells =
+            vec![Path::new(&system_root).join("System32/WindowsPowerShell/v1.0/powershell.exe")];
+        if let Some(pwsh) = crate::profiles::find_executable_on_path(
+            &std::env::var("PATH").unwrap_or_default(),
+            Some(".EXE"),
+            "pwsh.exe",
+        ) {
+            shells.push(pwsh);
+        }
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/link-command.ps1");
+        for shell in shells {
+            let home = tempfile::tempdir().unwrap();
+            let env = Env::for_test(home.path(), &[]);
+            let plugins = env.herdr_config_dir().join("plugins");
+            let checkout = plugins.join(".tmp-install-12-34/checkout");
+            let source = checkout.join("target/release/herdr-projects.exe");
+            let binary = plugins
+                .join("github/herdr-projects-b1278ffb803c/target/release/herdr-projects.exe");
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+            let command = link_path(&env);
+            let marker = marker_path(&command);
+            let script_command = || {
+                let mut process = std::process::Command::new(&shell);
+                process
+                    .env_clear()
+                    .env("SystemRoot", &system_root)
+                    .env("HOME", home.path())
+                    .env("TEMP", home.path())
+                    .env("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+                    .env("XDG_BIN_HOME", bin_dir(&env))
+                    .env("PATH", bin_dir(&env))
+                    .args([
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                    ])
+                    .arg(&script)
+                    .arg(&checkout);
+                process
+            };
+            let run = || {
+                let out = script_command().output().unwrap();
+                assert!(
+                    out.status.success(),
+                    "{}: {}",
+                    shell.display(),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            };
+
+            for build in [b"first build".as_slice(), b"second build".as_slice()] {
+                std::fs::write(&source, build).unwrap();
+                std::fs::write(&binary, build).unwrap();
+                run();
+                assert_eq!(std::fs::read(&command).unwrap(), build);
+                assert_eq!(state(&env, &binary), State::Ours);
+                assert_eq!(
+                    installed_source(&command).unwrap(),
+                    crate::paths::canonicalize(&binary).unwrap()
+                );
+            }
+
+            let marker_before_failure = std::fs::read(&marker).unwrap();
+            let original_permissions = std::fs::metadata(&marker).unwrap().permissions();
+            let mut permissions = original_permissions.clone();
+            permissions.set_readonly(true);
+            std::fs::set_permissions(&marker, permissions).unwrap();
+            std::fs::write(&source, b"failed PowerShell refresh").unwrap();
+            let failed = script_command().output();
+            let still_readonly = std::fs::metadata(&marker).unwrap().permissions().readonly();
+            std::fs::set_permissions(&marker, original_permissions).unwrap();
+            assert!(!failed.unwrap().status.success());
+            assert!(still_readonly);
+            assert_eq!(std::fs::read(&command).unwrap(), b"second build");
+            assert_eq!(std::fs::read(&marker).unwrap(), marker_before_failure);
+
+            let rust_binary = home.path().join("other/target/release/herdr-projects.exe");
+            std::fs::create_dir_all(rust_binary.parent().unwrap()).unwrap();
+            std::fs::write(&rust_binary, b"Rust refresh").unwrap();
+            std::fs::write(&source, b"PowerShell refresh").unwrap();
+            std::fs::write(&binary, b"PowerShell refresh").unwrap();
+            let before = std::fs::read(&command).unwrap();
+            let before_marker = std::fs::read(&marker).unwrap();
+            std::thread::scope(|scope| {
+                use std::sync::mpsc::{RecvTimeoutError, channel};
+                use std::time::Duration;
+                let held = transaction_lock(&command).unwrap();
+                let (started, ready) = channel();
+                let (rust_done, rust_completed) = channel();
+                let (script_done, script_completed) = channel();
+                let writer_env = &env;
+                let writer_binary = &rust_binary;
+                let rust_writer = scope.spawn(move || {
+                    started.send(()).unwrap();
+                    let result = ensure(writer_env, writer_binary);
+                    rust_done.send(()).unwrap();
+                    result
+                });
+                let child = script_command()
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                let native_writer = scope.spawn(move || {
+                    let output = child.wait_with_output().unwrap();
+                    script_done.send(()).unwrap();
+                    output
+                });
+                ready.recv().unwrap();
+                assert!(matches!(
+                    rust_completed.recv_timeout(Duration::from_millis(250)),
+                    Err(RecvTimeoutError::Timeout)
+                ));
+                assert!(matches!(
+                    script_completed.recv_timeout(Duration::from_secs(2)),
+                    Err(RecvTimeoutError::Timeout)
+                ));
+                assert_eq!(std::fs::read(&command).unwrap(), before);
+                assert_eq!(std::fs::read(&marker).unwrap(), before_marker);
+                drop(held);
+                assert!(matches!(
+                    rust_writer.join().unwrap().unwrap(),
+                    State::Stale(_)
+                ));
+                let output = native_writer.join().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            });
+            let installed = installed_source(&command).unwrap();
+            assert!(
+                installed == crate::paths::canonicalize(&binary).unwrap()
+                    || installed == crate::paths::canonicalize(&rust_binary).unwrap()
+            );
+            assert_eq!(
+                std::fs::read(&command).unwrap(),
+                std::fs::read(&installed).unwrap()
+            );
+            assert_eq!(state(&env, &installed), State::Ours);
+
+            // Neither writer may overwrite an unrelated token, or publish while rejecting it.
+            let lock = command.with_file_name(".herdr-projects-command.lock");
+            std::fs::write(&lock, b"foreign lock file").unwrap();
+            let saved_command = std::fs::read(&command).unwrap();
+            let marker_before_lock_failure = std::fs::read(&marker).unwrap();
+            std::fs::write(&rust_binary, b"blocked Rust refresh").unwrap();
+            assert!(ensure(&env, &rust_binary).is_err());
+            assert!(!script_command().output().unwrap().status.success());
+            assert_eq!(std::fs::read(&lock).unwrap(), b"foreign lock file");
+            assert_eq!(std::fs::read(&command).unwrap(), saved_command);
+            assert_eq!(std::fs::read(&marker).unwrap(), marker_before_lock_failure);
+            std::fs::write(&lock, LOCK_SIGNATURE).unwrap();
+
+            let saved_marker = std::fs::read(&marker).unwrap();
+            std::fs::write(&command, b"tampered").unwrap();
+            run();
+            assert_eq!(std::fs::read(&command).unwrap(), b"tampered");
+            assert_eq!(std::fs::read(&marker).unwrap(), saved_marker);
+            std::fs::remove_file(&marker).unwrap();
+            std::fs::write(&command, b"foreign").unwrap();
+            run();
+            assert_eq!(std::fs::read(&command).unwrap(), b"foreign");
+            assert!(!marker.exists());
+        }
     }
 
     #[test]

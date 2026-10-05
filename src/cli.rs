@@ -442,6 +442,48 @@ enum ThreadCommand {
     },
 }
 
+/// Checks the HTTPS host boundary, not full URL syntax.
+fn valid_https_target(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    if url
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
+    {
+        return false;
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_port = authority.rsplit('@').next().unwrap_or_default();
+    let port = if let Some(bracketed) = host_port.strip_prefix('[') {
+        let Some((host, suffix)) = bracketed.split_once(']') else {
+            return false;
+        };
+        if host.parse::<std::net::Ipv6Addr>().is_err() {
+            return false;
+        }
+        if suffix.is_empty() {
+            None
+        } else {
+            let Some(port) = suffix.strip_prefix(':') else {
+                return false;
+            };
+            Some(port)
+        }
+    } else {
+        let (host, port) = host_port
+            .split_once(':')
+            .map_or((host_port, None), |(host, port)| (host, Some(port)));
+        if host.is_empty() || host.contains(['[', ']']) {
+            return false;
+        }
+        port
+    };
+    port.is_none_or(|port| {
+        !port.is_empty() && port.bytes().all(|c| c.is_ascii_digit()) && port.parse::<u16>().is_ok()
+    })
+}
+
 /// `-` is standard input; a relative path is relative to the caller's directory.
 fn read_text(file: &str) -> Result<String> {
     use std::io::Read;
@@ -673,7 +715,8 @@ pub fn run() -> Result<()> {
         config_dir,
         runner: &runner,
         detached_ticker: true,
-    };
+    }
+    .initialize()?;
 
     match cli.command {
         Command::New {
@@ -915,8 +958,8 @@ pub fn run() -> Result<()> {
             crate::settings::open_file(&ctx, &path, workspace.as_deref())
         }
         Command::OpenUrl { url } => {
-            if !url.starts_with("https://") {
-                bail!("only https URLs are opened");
+            if !valid_https_target(&url) {
+                bail!("only https URLs with a valid host and optional numeric port are opened");
             }
             crate::settings::system_open(&ctx, &url)
         }
@@ -1131,5 +1174,69 @@ pub fn run() -> Result<()> {
             TickerCommand::Stop => ticker::stop(&ctx.root),
             TickerCommand::Status => ticker::status(&ctx.root),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_https_target;
+
+    #[test]
+    fn open_url_https_host_boundary() {
+        for url in [
+            "https://example.com",
+            "https://example.com/path?query=value#fragment",
+            "https://example.com?query=value",
+            "https://example.com#fragment",
+            "https://example.com:443/",
+            "https://example.com:0/",
+            "https://example.com:65535/",
+            "https://user:password@example.com:443/path",
+            "https://127.0.0.1:8443/",
+            "https://[::1]",
+            "https://[2001:db8::1]:443/path?query=value#fragment",
+            "https://user:password@[::ffff:192.0.2.1]:8443/",
+            "https://bücher.example/a%20b",
+        ] {
+            assert!(valid_https_target(url), "valid HTTPS target refused");
+        }
+        for url in [
+            "",
+            "http://example.com",
+            "HTTPS://example.com",
+            "https://",
+            "https:///path",
+            "https://?query=value",
+            "https://#fragment",
+            "https://:443/path",
+            "https://user@",
+            "https://user@/path",
+            "https://user@:443/path",
+            "https://user:password@?query=value",
+            "https://example.com:",
+            "https://example.com:port",
+            "https://example.com:+443",
+            "https://example.com:-1",
+            "https://example.com:65536",
+            "https://example.com:443:80",
+            "https://[]",
+            "https://[example.com]",
+            "https://[::1",
+            "https://::1",
+            "https://[::1]extra",
+            "https://[::1]:",
+            "https://[::1]:65536",
+            "https://example.com]/",
+            "https://example.com\\path",
+            "https://user\\@example.com/",
+            "https://example.com/a b",
+            "https://example.com/\t",
+            "https://example.com/\n",
+            "https://example.com/\0",
+            "https://example.com/\u{7f}",
+            "https://example.com/\u{a0}",
+        ] {
+            assert!(!valid_https_target(url), "invalid HTTPS target accepted");
+        }
     }
 }

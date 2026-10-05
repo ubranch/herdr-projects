@@ -5,11 +5,11 @@ The repository is public and carries the `herdr-plugin` topic, so the Herdr mark
 ## Every release
 
 - [ ] `version` agrees in `Cargo.toml`, `herdr-plugin.toml` and `Cargo.lock`.
-- [ ] `cargo build --release --locked` and `cargo test` pass on macOS and on Linux.
+- [ ] Formatting, strict all-target Clippy, locked tests and release builds pass on native macOS, Linux and Windows runners.
 - [ ] Walk through `docs/manual-test.md`, including the client-witnessed checks.
 - [ ] Tag `v<version>` on `main`, push the tag, and create the GitHub release with notes in user terms.
-- [ ] The `Release binaries` workflow passes: it attaches the four binaries and `SHA256SUMS` to the release, and fails when one is missing.
-- [ ] On every machine that runs the plugin from a checkout: `git pull`, `sh scripts/install.sh`, then `herdr-projects doctor` and `doctor --fix`.
+- [ ] The `Release binaries` workflow passes: it attaches five binaries (including Windows x64) and `SHA256SUMS`, checks every asset is present, and exercises actual published-binary installation on macOS and Windows.
+- [ ] When deliberately updating a checkout installation, fast-forward the clean fork `main`, run `sh scripts/install.sh` on macOS/Linux or `scripts/install.ps1` on Windows, then `herdr-projects doctor` and `doctor --fix`. Do not replace binaries or restart tickers in unrelated running sessions merely to publish a release.
 
 ## Done
 
@@ -19,5 +19,5 @@ The repository is public and carries the `herdr-plugin` topic, so the Herdr mark
 
 ## Open
 
-- [ ] Verify `herdr plugin install eliasstravik/herdr-projects` from a clean machine: it clones, downloads the prebuilt binary, and registers the actions and popups.
+- [ ] Verify `herdr plugin install ubranch/herdr-projects` from a clean machine: it clones, downloads the prebuilt binary, and registers the actions and popups.
 - [ ] `docs/herdr-notes.md` and `docs/manual-test.md` name the author's machines and home paths. Generalise them.

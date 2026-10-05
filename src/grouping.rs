@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::herdr::{Agent, CALL_TIMEOUT, Herdr, Workspace};
+use crate::paths::{self, SocketKey};
 
 /// Ends every home Space label; the Space rows make a label that contains it
 /// the project's bold head.
@@ -190,15 +191,15 @@ pub fn unmarked_homes(parts: &Parts, workspaces: &[Workspace]) -> Vec<(String, S
         .collect()
 }
 
-/// Tokens sent per `(kind, id)`, so an unchanged card is re-sent only to keep
+/// Tokens sent per `(socket, kind, id)`, so an unchanged card is re-sent only to keep
 /// its TTL alive.
 #[derive(Default)]
-pub struct Sent(HashMap<(String, String), (Tokens, Instant)>);
+pub struct Sent(HashMap<(SocketKey, &'static str, String), (Tokens, Instant)>);
 
 const RESEND: Duration = Duration::from_millis(crate::sidebar::TOKEN_TTL_MS / 3);
 
 impl Sent {
-    fn due(&mut self, key: (String, String), tokens: &Tokens) -> bool {
+    fn due(&mut self, key: (SocketKey, &'static str, String), tokens: &Tokens) -> bool {
         match self.0.get(&key) {
             Some((last, at)) if last == tokens && at.elapsed() < RESEND => false,
             _ => {
@@ -274,7 +275,10 @@ pub fn apply(herdr: &Herdr, socket: &str, parts: &Parts, agents: &[Agent], sent:
         }
     }
     for (pane, tokens) in &layout.agents {
-        if sent.due((format!("{socket} pane"), pane.clone()), tokens) {
+        if sent.due(
+            (paths::socket_ref(socket).to_owned(), "pane", pane.clone()),
+            tokens,
+        ) {
             report(herdr, "pane", pane, tokens);
         }
     }
@@ -284,6 +288,27 @@ pub fn apply(herdr: &Herdr, socket: &str, parts: &Parts, agents: &[Agent], sent:
 mod tests {
     use super::*;
     use crate::herdr::WorkspaceWorktree;
+
+    #[cfg(windows)]
+    #[test]
+    fn metadata_cache_accepts_socket_aliases_without_merging_namespaces() {
+        let mut sent = Sent::default();
+        let tokens = vec![("hp_sub".into(), Some("working".into()))];
+        let native = r"C:\config\herdr\sessions\one\herdr.sock";
+        let mixed = r"C:/config/herdr\sessions\one\herdr.sock";
+        assert!(sent.due((native.into(), "pane", "w1:p1".into()), &tokens));
+        assert!(!sent.due((mixed.into(), "pane", "w1:p1".into()), &tokens));
+        assert!(sent.due((mixed.into(), "workspace", "w1:p1".into()), &tokens));
+        assert!(sent.due((mixed.into(), "pane", "w1:p2".into()), &tokens));
+        assert!(sent.due(
+            (
+                r"C:\config\herdr\sessions\two\herdr.sock".into(),
+                "pane",
+                "w1:p1".into(),
+            ),
+            &tokens
+        ));
+    }
 
     fn agent(pane: &str) -> Agent {
         Agent {

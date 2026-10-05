@@ -9,7 +9,7 @@ use crate::coordinator;
 use crate::paths::{Ctx, Env};
 use crate::project::{self, Project};
 use crate::runner::fake::{FakeRunner, fail, ok};
-use crate::runner::{Cmd, Output};
+use crate::runner::{Cmd, Output, RealRunner, Runner};
 use crate::thread::{self, Kind, Status, Thread};
 use crate::threads::{self, ResolveArgs, StartArgs};
 use crate::ticker;
@@ -527,35 +527,323 @@ fn restart_defers_to_the_ticker_and_resets_launch_attempts() {
     assert!(brief.contains("The task."));
 }
 
+fn fixture_git(repo: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+fn cleanup_repo(world: &World) -> (PathBuf, PathBuf) {
+    let repo = world.home.path().join("repo");
+    let cwd = world.home.path().join("worktree");
+    std::fs::create_dir(&repo).unwrap();
+    fixture_git(&repo, &["init", "-q", "--initial-branch=main"]);
+    std::fs::write(repo.join("data.txt"), "must survive a refusal").unwrap();
+    fixture_git(&repo, &["add", "data.txt"]);
+    fixture_git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Cleanup Test",
+            "-c",
+            "user.email=cleanup@example.invalid",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+    );
+    std::fs::write(repo.join(".git/info/exclude"), ".herdr-project/\n").unwrap();
+    fixture_git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "hp/demo/t-0001-task",
+            &cwd.to_string_lossy(),
+        ],
+    );
+    world
+        .runner
+        .on_fn(|cmd| cmd.program == "git", |cmd| RealRunner.run(cmd));
+    (repo, cwd)
+}
+
+fn cleanup_worktree(world: &World, project: &Project, change: impl FnOnce(&mut Thread)) -> Thread {
+    let (repo, cwd) = cleanup_repo(world);
+    world.thread(project, &cwd, |t| {
+        t.repo = repo.to_string_lossy().into_owned();
+        t.branch = "hp/demo/t-0001-task".into();
+        t.pr_state = "OPEN".into();
+        change(t);
+    })
+}
+
+#[test]
+fn cleanup_real_git_preserves_dirty_untracked_kept_and_late_changes() {
+    for mode in [
+        "clean",
+        "dirty",
+        "untracked",
+        "keep",
+        "late",
+        "close-refused",
+    ] {
+        let world = World::new();
+        let project = world.project("demo", "a.sock");
+        let t = cleanup_worktree(&world, &project, |_| {});
+        let cwd = Path::new(&t.worktree_path);
+        std::fs::create_dir_all(&t.thread_dir).unwrap();
+        std::fs::write(t.report_path(), "final report").unwrap();
+        if mode == "dirty" {
+            std::fs::write(cwd.join("data.txt"), "changed").unwrap();
+        } else if mode == "untracked" {
+            std::fs::write(cwd.join("scratch.txt"), "untracked").unwrap();
+        }
+        *world.panes.borrow_mut() = format!(
+            "[{},{}]",
+            pane_json("w2", "w2:t1", "w2:p1", &t.cwd),
+            pane_json("w9", "w9:t1", "w9:p1", &t.cwd),
+        );
+        let closed = Rc::new(std::cell::Cell::new(false));
+        let did_close = closed.clone();
+        let path = cwd.to_path_buf();
+        world.runner.on_fn(
+            |cmd| cmd.display().contains("workspace close w2"),
+            move |_| {
+                assert!(path.join("data.txt").is_file());
+                if mode == "close-refused" {
+                    return Ok(fail(1, "native close refused"));
+                }
+                did_close.set(true);
+                if mode == "late" {
+                    std::fs::write(path.join("late.txt"), "written during close").unwrap();
+                }
+                Ok(ok(r#"{"result":{}}"#))
+            },
+        );
+        threads::resolve(
+            &world.ctx(),
+            "demo",
+            &t.id,
+            &ResolveArgs {
+                keep_worktree: mode == "keep",
+                ..ResolveArgs::default()
+            },
+        )
+        .unwrap();
+        let resolved = thread::load(&project, &t.id).unwrap();
+        assert_eq!(resolved.status, Status::Resolved);
+        assert_eq!(
+            std::fs::read_to_string(thread::home_report_path(&project, &t.id)).unwrap(),
+            "final report",
+        );
+        assert_eq!(world.runner.count("workspace close w9"), 0);
+        if mode == "clean" {
+            assert!(!cwd.exists());
+            assert!(closed.get());
+            assert!(resolved.worktree_path.is_empty());
+            assert!(
+                !fixture_git(Path::new(&t.repo), &["worktree", "list", "--porcelain"])
+                    .contains(&t.branch)
+            );
+        } else {
+            assert!(cwd.join("data.txt").is_file());
+            assert_eq!(resolved.worktree_path, t.worktree_path);
+            assert_eq!(closed.get(), mode == "late");
+            assert_eq!(resolved.kept_worktree, mode == "keep");
+            if mode == "untracked" {
+                assert_eq!(
+                    std::fs::read_to_string(cwd.join("scratch.txt")).unwrap(),
+                    "untracked"
+                );
+            } else if mode == "late" {
+                assert_eq!(
+                    std::fs::read_to_string(cwd.join("late.txt")).unwrap(),
+                    "written during close"
+                );
+            } else if mode == "dirty" {
+                assert_eq!(
+                    std::fs::read_to_string(cwd.join("data.txt")).unwrap(),
+                    "changed"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn cleanup_real_git_rejects_nested_gitless_and_foreign_repository_roots() {
+    for mode in [
+        "nested",
+        "gitless",
+        "foreign-repo",
+        "main-checkout",
+        "branch-changed",
+    ] {
+        let world = World::new();
+        let project = world.project("demo", "a.sock");
+        let t = cleanup_worktree(&world, &project, |_| {});
+        let mut path = PathBuf::from(&t.worktree_path);
+        let mut repo = t.repo.clone();
+        if mode == "nested" {
+            path.push("nested");
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("data.txt"), "must survive a refusal").unwrap();
+            fixture_git(Path::new(&t.worktree_path), &["add", "nested/data.txt"]);
+            fixture_git(
+                Path::new(&t.worktree_path),
+                &[
+                    "-c",
+                    "user.name=Cleanup Test",
+                    "-c",
+                    "user.email=cleanup@example.invalid",
+                    "commit",
+                    "-qm",
+                    "tracked nested folder",
+                ],
+            );
+        } else if mode == "gitless" {
+            std::fs::remove_file(path.join(".git")).unwrap();
+        } else if mode == "foreign-repo" {
+            let foreign = world.home.path().join("foreign-repo");
+            std::fs::create_dir(&foreign).unwrap();
+            fixture_git(&foreign, &["init", "-q"]);
+            repo = foreign.to_string_lossy().into_owned();
+        } else if mode == "main-checkout" {
+            path = PathBuf::from(&t.repo);
+            fixture_git(&path, &["checkout", "-q", "-b", "hp/demo/main-claimed"]);
+        } else {
+            fixture_git(&path, &["checkout", "-q", "-b", "hp/demo/new-owner"]);
+        }
+        let current = thread::update(&project, &t.id, |t| {
+            t.repo = repo;
+            t.worktree_path = path.to_string_lossy().into_owned();
+            t.cwd = t.worktree_path.clone();
+            t.thread_dir = thread::thread_dir(&t.cwd, &project.slug, &t.id);
+            if mode == "main-checkout" {
+                t.branch = "hp/demo/main-claimed".into();
+            }
+        })
+        .unwrap();
+        *world.panes.borrow_mut() =
+            format!("[{}]", pane_json("w2", "w2:t1", "w2:p1", &current.cwd));
+        world.runner.on("workspace close", ok(r#"{"result":{}}"#));
+        threads::resolve(&world.ctx(), "demo", &t.id, &ResolveArgs::default()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(path.join("data.txt")).unwrap(),
+            "must survive a refusal"
+        );
+        assert_eq!(
+            thread::load(&project, &t.id).unwrap().worktree_path,
+            current.worktree_path
+        );
+        assert_eq!(world.runner.count("workspace close"), 0);
+        assert!(Path::new(&t.repo).join("data.txt").is_file());
+    }
+}
+
+#[test]
+fn remote_removal_checks_and_removes_on_the_owner_machine() {
+    for status in ["", "?? remote.txt\n"] {
+        let world = World::new();
+        let project = world.project("demo", "a.sock");
+        let t = world.thread(&project, Path::new("/remote/worktree"), |t| {
+            t.machine = "box".into();
+            t.repo = "/remote/repo".into();
+            t.status = Status::Resolved;
+        });
+        *world.panes.borrow_mut() = format!(
+            "[{},{}]",
+            pane_json("w2", "w2:t1", "w2:p1", &t.cwd),
+            pane_json("w9", "w9:t1", "w9:p1", &t.cwd),
+        );
+        world.runner.on(
+            "machine list",
+            ok(r#"[{"id":"m1","label":"box","target":"user@host"}]"#),
+        );
+        world.runner.on("status --porcelain", ok(status));
+        world.runner.on("workspace close", ok(r#"{"result":{}}"#));
+        world.runner.on("worktree remove", ok(""));
+        let ctx = world.ctx();
+        let view = threads::session_view(&ctx, &project).unwrap();
+        let result = threads::remove_worktree(&ctx, &project, &t, Some(&view));
+        if status.is_empty() {
+            assert!(matches!(
+                result,
+                Ok(threads::Removal::Removed {
+                    workspace_closed: true
+                })
+            ));
+        } else {
+            assert!(result.is_err());
+        }
+        let calls = world.runner.calls.borrow();
+        assert!(!calls.iter().any(|cmd| cmd.program == "git"));
+        let status_call = calls
+            .iter()
+            .position(|cmd| cmd.display().contains("status --porcelain"))
+            .unwrap();
+        let check = &calls[status_call];
+        assert_eq!(check.program, "ssh");
+        assert!(check.args.iter().any(|arg| arg == "user@host"));
+        assert!(check.display().contains("cd /remote/worktree"));
+        let closed = calls
+            .iter()
+            .position(|cmd| cmd.display().contains("workspace close"));
+        let removed = calls
+            .iter()
+            .position(|cmd| cmd.display().contains("worktree remove"));
+        if status.is_empty() {
+            let closed = closed.unwrap();
+            let removed = removed.unwrap();
+            assert!(status_call < closed && closed < removed);
+            assert_eq!(
+                calls[closed].args,
+                ["--machine", "box", "workspace", "close", "w2"]
+            );
+            assert_eq!(calls[removed].program, "ssh");
+            assert!(calls[removed].args.iter().any(|arg| arg == "user@host"));
+            assert!(
+                calls[removed]
+                    .display()
+                    .contains("cd /remote/repo && git worktree remove /remote/worktree")
+            );
+        } else {
+            assert!(closed.is_none() && removed.is_none());
+        }
+    }
+}
+
 #[test]
 fn a_partial_copy_keeps_the_worktree_unless_the_loss_is_accepted() {
     let world = World::new();
     let project = world.project("demo", "a.sock");
-    let t = world.thread(&project, world.home.path(), |_| {});
+    let t = cleanup_worktree(&world, &project, |_| {});
     let dir: PathBuf = Path::new(&t.thread_dir).components().collect();
     std::fs::create_dir_all(dir.join("library")).unwrap();
     std::fs::write(dir.join("report.md"), "late report").unwrap();
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("private.txt"), "must not be copied").unwrap();
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(outside.path(), dir.join("library/link")).unwrap();
-    #[cfg(windows)]
-    {
-        let linked = std::process::Command::new(crate::paths::windows_cmd())
-            .args(["/c", "mklink", "/J"])
-            .arg(dir.join("library").join("link"))
-            .arg(outside.path())
-            .output()
-            .unwrap();
-        assert!(
-            linked.status.success(),
-            "{}",
-            String::from_utf8_lossy(&linked.stderr)
-        );
-    }
-    world.runner.on("worktree remove", ok(r#"{"result":{}}"#));
-    let cwd = world.home.path().to_string_lossy().into_owned();
-    *world.panes.borrow_mut() = format!("[{}]", pane_json("w2", "w2:t1", "w2:p1", &cwd));
+    // A real private hard link makes copying partial without requiring Git to
+    // recursively remove a Windows junction inside its ignored artifact folder.
+    std::fs::hard_link(
+        outside.path().join("private.txt"),
+        dir.join("library/private.txt"),
+    )
+    .unwrap();
+    world.runner.on("workspace close", ok(r#"{"result":{}}"#));
+    *world.panes.borrow_mut() = format!("[{}]", pane_json("w2", "w2:t1", "w2:p1", &t.cwd));
     let ctx = world.ctx();
 
     // Partial copy: resolved, report home, worktree kept and the item says why.
@@ -569,19 +857,23 @@ fn a_partial_copy_keeps_the_worktree_unless_the_loss_is_accepted() {
         std::fs::read_to_string(thread::home_report_path(&project, "t-0001")).unwrap(),
         "late report"
     );
-    assert_eq!(world.runner.count("worktree remove"), 0);
+    assert!(Path::new(&t.worktree_path).join("data.txt").is_file());
+    assert_eq!(world.runner.count("workspace close"), 0);
     assert!(!resolved.worktree_path.is_empty());
-    let item = inbox::unhandled(&project)
-        .into_iter()
-        .find(|i| i.kind == "thread-state")
-        .unwrap();
     assert!(
-        item.summary.contains("worktree kept") && item.summary.contains("not everything"),
-        "{}",
-        item.summary
+        !project
+            .dir()
+            .join("library")
+            .join(&t.id)
+            .join("private.txt")
+            .exists()
+    );
+    assert_eq!(
+        std::fs::read_to_string(outside.path().join("private.txt")).unwrap(),
+        "must not be copied"
     );
 
-    // --reopen starts nothing; --discard-uncopied removes it through herdr.
+    // --reopen starts nothing; --discard-uncopied closes it before Git removal.
     threads::resolve(
         &ctx,
         "demo",
@@ -607,207 +899,337 @@ fn a_partial_copy_keeps_the_worktree_unless_the_loss_is_accepted() {
         },
     )
     .unwrap();
-    assert_eq!(world.runner.count("worktree remove --workspace w2"), 1);
+    assert_eq!(world.runner.count("workspace close w2"), 1);
+    assert!(!Path::new(&t.worktree_path).exists());
     assert!(
         thread::load(&project, "t-0001")
             .unwrap()
             .worktree_path
             .is_empty()
     );
+    assert_eq!(
+        std::fs::read_to_string(outside.path().join("private.txt")).unwrap(),
+        "must not be copied"
+    );
 }
 
 #[test]
-fn resolving_a_merged_thread_removes_worktree_and_branch_and_an_unmerged_one_keeps_the_branch() {
-    for merged in [true, false] {
+fn cleanup_real_git_deletes_only_the_merged_tip_and_handles_gone_worktrees() {
+    for mode in ["merged", "unmerged", "advanced", "gone"] {
         let world = World::new();
         let project = world.project("demo", "a.sock");
-        world.thread(&project, world.home.path(), |t| {
-            t.branch = "hp/demo/t-0001-task".into();
-            t.pr_state = if merged {
-                "MERGED".into()
-            } else {
-                "OPEN".into()
-            };
+        let t = cleanup_worktree(&world, &project, |t| {
+            t.pr_state = if mode == "unmerged" { "OPEN" } else { "MERGED" }.into();
         });
-        let cwd = world.home.path().to_string_lossy().into_owned();
-        *world.panes.borrow_mut() = format!("[{}]", pane_json("w2", "w2:t1", "w2:p1", &cwd));
-        world.runner.on("worktree remove", ok(r#"{"result":{}}"#));
-        world.runner.on("branch -D", ok(""));
-        world.runner.on(
-            "rev-parse --verify --quiet refs/heads/hp/demo/t-0001-task",
-            ok("abc123\n"),
-        );
+        let repo = Path::new(&t.repo);
+        let head = fixture_git(repo, &["rev-parse", &t.branch]);
         let mut state = crate::steps::load_state(&project);
         state.prs.insert(
-            "t-0001".into(),
+            t.id.clone(),
             crate::pr::Summary {
                 state: "MERGED".into(),
-                head_oid: "abc123".into(),
+                head_oid: head.clone(),
                 ..Default::default()
             },
         );
         crate::steps::save_state(&project, &state).unwrap();
-        threads::resolve(&world.ctx(), "demo", "t-0001", &ResolveArgs::default()).unwrap();
-        assert_eq!(
-            world.runner.count("worktree remove --workspace w2"),
-            1,
-            "merged={merged}"
+        let tip = if mode == "advanced" {
+            fixture_git(
+                Path::new(&t.worktree_path),
+                &[
+                    "-c",
+                    "user.name=Cleanup Test",
+                    "-c",
+                    "user.email=cleanup@example.invalid",
+                    "commit",
+                    "--allow-empty",
+                    "-qm",
+                    "not merged",
+                ],
+            );
+            fixture_git(repo, &["rev-parse", &t.branch])
+        } else {
+            head
+        };
+        if mode == "gone" {
+            std::fs::remove_dir_all(&t.worktree_path).unwrap();
+        }
+        *world.panes.borrow_mut() = format!(
+            "[{},{}]",
+            pane_json("w2", "w2:t1", "w2:p1", &t.cwd),
+            pane_json("w9", "w9:t1", "w9:p1", &t.cwd),
         );
-        assert_eq!(
-            world.runner.count("branch -D hp/demo/t-0001-task"),
-            usize::from(merged)
-        );
+        world.runner.on("workspace close", ok(r#"{"result":{}}"#));
+        threads::resolve(&world.ctx(), "demo", &t.id, &ResolveArgs::default()).unwrap();
+        assert!(!Path::new(&t.worktree_path).exists());
         assert!(
-            thread::load(&project, "t-0001")
+            thread::load(&project, &t.id)
                 .unwrap()
                 .worktree_path
                 .is_empty()
         );
-        let item = inbox::unhandled(&project)
-            .into_iter()
-            .find(|i| i.kind == "thread-state")
-            .unwrap();
-        if merged {
-            assert!(
-                item.summary
-                    .contains("deleted (its pull request is merged)"),
-                "{}",
-                item.summary
-            );
+        let remaining = fixture_git(
+            repo,
+            &[
+                "for-each-ref",
+                "--format=%(objectname)",
+                &format!("refs/heads/{}", t.branch),
+            ],
+        );
+        if matches!(mode, "unmerged" | "advanced") {
+            assert_eq!(remaining, tip);
         } else {
-            assert!(
-                item.summary
-                    .contains("kept: its pull request is not merged"),
-                "{}",
-                item.summary
-            );
+            assert!(remaining.is_empty());
         }
-        assert!(thread::record_path(&project, "t-0001").is_file());
+        assert_eq!(world.runner.count("workspace close w2"), 1);
+        assert_eq!(world.runner.count("workspace close w9"), 0);
+        assert!(thread::record_path(&project, &t.id).is_file());
     }
 }
 
 #[test]
-fn resolving_a_thread_whose_worktree_is_already_gone_closes_its_workspace() {
-    let world = World::new();
-    let project = world.project("demo", "a.sock");
-    let gone = world.home.path().join("gone");
-    world.thread(&project, &gone, |t| {
-        t.branch = "hp/demo/t-0001-task".into();
-        t.pr_state = "MERGED".into();
-    });
-    let cwd = gone.to_string_lossy().into_owned();
-    *world.panes.borrow_mut() = format!("[{}]", pane_json("w2", "w2:t1", "w2:p1", &cwd));
-    // What herdr says of a worktree git no longer knows.
-    world.runner.on(
-        "worktree remove",
-        fail(1, "fatal: not a working tree (worktree_remove_failed)"),
-    );
-    world.runner.on("worktree prune", ok(""));
-    world.runner.on("workspace close", ok(r#"{"result":{}}"#));
-    world.runner.on(
-        "rev-parse --verify --quiet refs/heads/hp/demo/t-0001-task",
-        fail(1, ""),
-    );
-    let mut state = crate::steps::load_state(&project);
-    state.prs.insert(
-        "t-0001".into(),
-        crate::pr::Summary {
-            state: "MERGED".into(),
-            head_oid: "abc123".into(),
-            ..Default::default()
-        },
-    );
-    crate::steps::save_state(&project, &state).unwrap();
-
-    threads::resolve(&world.ctx(), "demo", "t-0001", &ResolveArgs::default()).unwrap();
-    assert_eq!(world.runner.count("worktree remove"), 0);
-    assert_eq!(world.runner.count("worktree prune"), 1);
-    assert_eq!(world.runner.count("workspace close w2"), 1);
-    assert!(
-        thread::load(&project, "t-0001")
-            .unwrap()
-            .worktree_path
-            .is_empty()
-    );
-    let item = inbox::unhandled(&project)
-        .into_iter()
-        .find(|i| i.kind == "thread-state")
-        .unwrap();
-    assert!(
-        item.summary
-            .contains("was already gone; its workspace closed"),
-        "{}",
-        item.summary
-    );
-    assert!(
-        item.summary
-            .contains("branch hp/demo/t-0001-task was already deleted"),
-        "{}",
-        item.summary
-    );
-    assert!(!item.summary.contains("kept"), "{}", item.summary);
+fn sweep_real_git_revalidates_worktree_and_gone_workspace_owners() {
+    for gone in [false, true] {
+        for mode in ["clean", "reopened", "kept", "moved", "workspace", "late"] {
+            let world = World::new();
+            let project = world.project("demo", "a.sock");
+            let t = cleanup_worktree(&world, &project, |t| {
+                t.status = Status::Resolved;
+                t.repo_workspace = "w10".into();
+            });
+            if gone {
+                fixture_git(
+                    Path::new(&t.repo),
+                    &["worktree", "remove", &t.worktree_path],
+                );
+            } else {
+                std::fs::create_dir_all(Path::new(&t.thread_dir).join("library")).unwrap();
+                std::fs::write(t.report_path(), "resolved report").unwrap();
+                std::fs::write(
+                    Path::new(&t.thread_dir).join("library/note.md"),
+                    "resolved note",
+                )
+                .unwrap();
+            }
+            *world.panes.borrow_mut() = format!(
+                "[{},{}]",
+                pane_json("w2", "w2:t1", "w2:p1", &t.cwd),
+                pane_json("w9", "w9:t1", "w9:p1", &t.cwd),
+            );
+            let closed_path = PathBuf::from(&t.worktree_path);
+            world.runner.on_fn(
+                |cmd| cmd.display().contains("workspace close w2"),
+                move |_| {
+                    if mode == "late" {
+                        std::fs::create_dir_all(&closed_path).unwrap();
+                        std::fs::write(closed_path.join("late.txt"), "new data during close")
+                            .unwrap();
+                    }
+                    Ok(ok(r#"{"result":{}}"#))
+                },
+            );
+            // The UI discovery call is after Git has captured the cleanup plan.
+            let changed = std::cell::Cell::new(false);
+            let current_project = project.clone();
+            let id = t.id.clone();
+            let moved = world.home.path().join("moved");
+            let moved_path = moved.clone();
+            world.runner.on_fn(
+                |cmd| cmd.display().contains("workspace list"),
+                move |_| {
+                    if !changed.replace(true) && !matches!(mode, "clean" | "late") {
+                        if mode == "moved" {
+                            std::fs::create_dir(&moved_path).unwrap();
+                            std::fs::write(moved_path.join("new.txt"), "new owner data").unwrap();
+                        }
+                        thread::update(&current_project, &id, |t| match mode {
+                            "reopened" => t.status = Status::Open,
+                            "kept" => t.kept_worktree = true,
+                            "moved" => {
+                                t.worktree_path = moved_path.to_string_lossy().into_owned();
+                                t.cwd = t.worktree_path.clone();
+                            }
+                            "workspace" => t.workspace_id = "w3".into(),
+                            _ => unreachable!(),
+                        })
+                        .unwrap();
+                    }
+                    Ok(ok(r#"{"result":{"workspaces":[]}}"#))
+                },
+            );
+            crate::sweep::run(&world.ctx(), "demo", false, true).unwrap();
+            let current = thread::load(&project, &t.id).unwrap();
+            assert_eq!(world.runner.count("workspace close w9"), 0);
+            if mode == "clean" {
+                assert!(!Path::new(&t.worktree_path).exists());
+                assert!(current.worktree_path.is_empty());
+                assert_eq!(world.runner.count("workspace close w2"), 1);
+                if !gone {
+                    assert_eq!(
+                        std::fs::read_to_string(thread::home_report_path(&project, &t.id)).unwrap(),
+                        "resolved report"
+                    );
+                    assert_eq!(
+                        std::fs::read_to_string(
+                            project.dir().join("library").join(&t.id).join("note.md")
+                        )
+                        .unwrap(),
+                        "resolved note"
+                    );
+                }
+            } else {
+                assert_eq!(
+                    world.runner.count("workspace close w2"),
+                    usize::from(mode == "late")
+                );
+                assert_eq!(
+                    current.worktree_path,
+                    if mode == "moved" {
+                        moved.to_string_lossy().into_owned()
+                    } else {
+                        t.worktree_path.clone()
+                    },
+                );
+                if !gone {
+                    assert_eq!(
+                        std::fs::read_to_string(Path::new(&t.worktree_path).join("data.txt"))
+                            .unwrap(),
+                        "must survive a refusal"
+                    );
+                    assert!(
+                        fixture_git(Path::new(&t.repo), &["worktree", "list", "--porcelain"])
+                            .contains(&t.branch)
+                    );
+                }
+                if mode == "moved" {
+                    assert_eq!(
+                        std::fs::read_to_string(moved.join("new.txt")).unwrap(),
+                        "new owner data"
+                    );
+                }
+                if mode == "late" {
+                    assert_eq!(
+                        std::fs::read_to_string(Path::new(&t.worktree_path).join("late.txt"))
+                            .unwrap(),
+                        "new data during close"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
-fn sweep_closes_a_resolved_threads_workspace_left_on_a_gone_worktree() {
-    let world = World::new();
-    let project = world.project("demo", "a.sock");
-    let gone = world.home.path().join("gone");
-    world.thread(&project, &gone, |t| t.status = Status::Resolved);
-    let cwd = gone.to_string_lossy().into_owned();
-    *world.panes.borrow_mut() = format!("[{}]", pane_json("w2", "w2:t1", "w2:p1", &cwd));
-    world.runner.on("workspace close", ok(r#"{"result":{}}"#));
-    let orphans = crate::sweep::find(&world.ctx(), &project);
-    assert!(
-        orphans.contains(&crate::sweep::Orphan::Workspace {
-            id: "t-0001".into(),
-            workspace: "w2".into()
-        }),
-        "{orphans:?}"
-    );
-    crate::sweep::run(&world.ctx(), "demo", false, true).unwrap();
-    assert_eq!(world.runner.count("workspace close w2"), 1);
-    assert!(
-        thread::load(&project, "t-0001")
-            .unwrap()
-            .worktree_path
-            .is_empty()
-    );
-
-    // A worktree that is still there is not this orphan.
-    let world = World::new();
-    let project = world.project("demo", "a.sock");
-    world.thread(&project, world.home.path(), |t| t.status = Status::Resolved);
-    *world.panes.borrow_mut() = format!(
-        "[{}]",
-        pane_json("w2", "w2:t1", "w2:p1", &world.home.path().to_string_lossy())
-    );
-    assert!(
-        !crate::sweep::find(&world.ctx(), &project)
-            .iter()
-            .any(|o| matches!(o, crate::sweep::Orphan::Workspace { .. }))
-    );
+fn sweep_real_git_preserves_advanced_and_checked_out_branches_after_discovery() {
+    for mode in ["delete", "advance", "main-checkout", "foreign-worktree"] {
+        let world = World::new();
+        let project = world.project("demo", "a.sock");
+        let t = cleanup_worktree(&world, &project, |t| {
+            t.status = Status::Resolved;
+            t.pr_state = "MERGED".into();
+            t.repo_workspace = "w10".into();
+        });
+        fixture_git(
+            Path::new(&t.repo),
+            &["worktree", "remove", &t.worktree_path],
+        );
+        let head = fixture_git(Path::new(&t.repo), &["rev-parse", &t.branch]);
+        let mut state = crate::steps::load_state(&project);
+        state.prs.insert(
+            t.id.clone(),
+            crate::pr::Summary {
+                state: "MERGED".into(),
+                head_oid: head.clone(),
+                ..Default::default()
+            },
+        );
+        crate::steps::save_state(&project, &state).unwrap();
+        let changed = std::cell::Cell::new(false);
+        let repo = PathBuf::from(&t.repo);
+        let branch = t.branch.clone();
+        let tip = Rc::new(RefCell::new(head));
+        let saved_tip = tip.clone();
+        let foreign = world.home.path().join("foreign-worktree");
+        let foreign_path = foreign.clone();
+        world.runner.on_fn(
+            |cmd| cmd.display().contains("workspace list"),
+            move |_| {
+                if mode != "delete" && !changed.replace(true) {
+                    if mode == "foreign-worktree" {
+                        fixture_git(
+                            &repo,
+                            &[
+                                "worktree",
+                                "add",
+                                "-q",
+                                &foreign_path.to_string_lossy(),
+                                &branch,
+                            ],
+                        );
+                    } else {
+                        fixture_git(&repo, &["checkout", "-q", &branch]);
+                        if mode == "advance" {
+                            fixture_git(
+                                &repo,
+                                &[
+                                    "-c",
+                                    "user.name=Cleanup Test",
+                                    "-c",
+                                    "user.email=cleanup@example.invalid",
+                                    "commit",
+                                    "--allow-empty",
+                                    "-qm",
+                                    "new unmerged commit",
+                                ],
+                            );
+                            *saved_tip.borrow_mut() = fixture_git(&repo, &["rev-parse", "HEAD"]);
+                            fixture_git(&repo, &["checkout", "-q", "main"]);
+                        }
+                    }
+                }
+                Ok(ok(r#"{"result":{"workspaces":[]}}"#))
+            },
+        );
+        crate::sweep::run(&world.ctx(), "demo", false, true).unwrap();
+        let remaining = fixture_git(
+            Path::new(&t.repo),
+            &[
+                "for-each-ref",
+                "--format=%(objectname)",
+                &format!("refs/heads/{}", t.branch),
+            ],
+        );
+        if mode != "delete" {
+            assert_eq!(remaining, *tip.borrow());
+            assert!(!remaining.is_empty());
+        } else {
+            assert!(remaining.is_empty());
+        }
+        if mode == "foreign-worktree" {
+            assert!(foreign.join("data.txt").is_file());
+        } else if mode == "main-checkout" {
+            assert_eq!(
+                fixture_git(Path::new(&t.repo), &["symbolic-ref", "--short", "HEAD"]),
+                t.branch
+            );
+        }
+        assert!(thread::record_path(&project, &t.id).is_file());
+    }
 }
 
 #[test]
 fn resolving_the_last_thread_closes_its_empty_repo_space() {
     let world = World::new();
     let project = world.project("demo", "a.sock");
-    let repo = world.home.path().join("repo");
-    std::fs::create_dir(&repo).unwrap();
-    let repo = repo.to_string_lossy().into_owned();
-    let r = repo.clone();
-    world.thread(&project, world.home.path(), |t| {
-        t.repo = r;
-        t.repo_workspace = "w9".into();
-    });
-    let cwd = world.home.path().to_string_lossy().into_owned();
+    let t = cleanup_worktree(&world, &project, |t| t.repo_workspace = "w9".into());
+    let repo = t.repo.clone();
+    let cwd = t.cwd.clone();
     *world.panes.borrow_mut() = format!(
         "[{},{}]",
         pane_json("w2", "w2:t1", "w2:p1", &cwd),
         pane_json("w9", "w9:t1", "w9:p1", &repo)
     );
-    world.runner.on("worktree remove", ok(r#"{"result":{}}"#));
+    world.runner.on("workspace close", ok(r#"{"result":{}}"#));
     // After the removal herdr lists only the repository's primary Space.
     world.runner.on("workspace list", ok(&serde_json::json!({
         "result": {"workspaces": [{
@@ -816,61 +1238,15 @@ fn resolving_the_last_thread_closes_its_empty_repo_space() {
         }]},
     }).to_string()));
     world.runner.on("process-info", ok(r#"{"result":{"process_info":{"shell_pid":7,"foreground_process_group_id":7,"foreground_processes":[{"pid":7,"name":"zsh"}]}}}"#));
-    world.runner.on("workspace close", ok(r#"{"result":{}}"#));
     threads::resolve(&world.ctx(), "demo", "t-0001", &ResolveArgs::default()).unwrap();
-    assert_eq!(world.runner.count("worktree remove --workspace w2"), 1);
+    assert_eq!(world.runner.count("workspace close w2"), 1);
+    assert!(!Path::new(&t.worktree_path).exists());
     assert_eq!(world.runner.count("workspace close w9"), 1);
     let item = inbox::unhandled(&project)
         .into_iter()
         .find(|i| i.kind == "space")
         .unwrap();
     assert_eq!(item.summary, "closed empty Space repo (w9)");
-}
-
-#[test]
-fn a_merged_branch_with_a_later_local_commit_is_kept() {
-    let world = World::new();
-    let project = world.project("demo", "a.sock");
-    world.thread(&project, world.home.path(), |t| {
-        t.branch = "hp/demo/t-0001-task".into();
-        t.pr_state = "MERGED".into();
-    });
-    let cwd = world.home.path().to_string_lossy().into_owned();
-    *world.panes.borrow_mut() = format!(
-        "[{},{}]",
-        pane_json("w2", "w2:t1", "w2:p1", &cwd),
-        pane_json("w9", "w9:t1", "w9:p1", &cwd)
-    );
-    world.runner.on("worktree remove", ok(r#"{"result":{}}"#));
-    world.runner.on(
-        "rev-parse --verify --quiet refs/heads/",
-        ok("local-only-commit\n"),
-    );
-    let mut state = crate::steps::load_state(&project);
-    state.prs.insert(
-        "t-0001".into(),
-        crate::pr::Summary {
-            state: "MERGED".into(),
-            head_oid: "merged-head".into(),
-            ..Default::default()
-        },
-    );
-    crate::steps::save_state(&project, &state).unwrap();
-    threads::resolve(&world.ctx(), "demo", "t-0001", &ResolveArgs::default()).unwrap();
-    assert_eq!(world.runner.count("branch -D"), 0);
-    // Only the thread's own workspace (w2), not another pane in the same folder.
-    assert_eq!(world.runner.count("worktree remove --workspace w2"), 1);
-    assert_eq!(world.runner.count("--workspace w9"), 0);
-    let item = inbox::unhandled(&project)
-        .into_iter()
-        .find(|i| i.kind == "thread-state")
-        .unwrap();
-    assert!(
-        item.summary
-            .contains("commits that are not in the merged pull request"),
-        "{}",
-        item.summary
-    );
 }
 
 #[test]
@@ -1383,7 +1759,7 @@ fn settle(project: &Project) {
 }
 
 fn set_agents(world: &World, project: &Project, thread_state: &str) {
-    let cwd = world.home.path().to_string_lossy().into_owned();
+    let cwd = thread::load(project, "t-0001").unwrap().cwd;
     let dir = project.canonical_dir().to_string_lossy().into_owned();
     *world.agents.borrow_mut() = format!(
         "[{},{}]",
@@ -1768,8 +2144,6 @@ fn pull_requests_are_checked_at_most_every_two_minutes() {
     assert_eq!(world.runner.count("gh pr view"), 1);
 }
 
-const MERGED_JSON: &str = r#"{"state":"MERGED","reviewDecision":"APPROVED","headRefName":"hp/demo/t-0001-task","headRefOid":"merged-head","headRepository":{"name":"app"},"headRepositoryOwner":{"login":"owner"}}"#;
-
 /// Backdates when the ticker first saw the merge.
 fn merged_seen_ago(project: &Project, secs: i64) {
     let mut state = crate::steps::load_state(project);
@@ -1781,14 +2155,39 @@ fn merged_seen_ago(project: &Project, secs: i64) {
 }
 
 fn merged_world(agent_state: &str) -> (World, Project) {
-    let (world, project) = pr_world(MERGED_JSON);
-    set_agents(&world, &project, agent_state);
-    world.runner.on("worktree remove", ok(r#"{"result":{}}"#));
+    let (world, project, t) = finished_world("idle");
+    let (repo, cwd) = cleanup_repo(&world);
+    thread::update(&project, &t.id, |t| {
+        t.repo = repo.to_string_lossy().into_owned();
+        t.cwd = cwd.to_string_lossy().into_owned();
+        t.worktree_path = t.cwd.clone();
+        t.thread_dir = thread::thread_dir(&t.cwd, &project.slug, &t.id);
+        t.branch = "hp/demo/t-0001-task".into();
+        t.origin = "git@github.com:Owner/App.git".into();
+        t.report_hash = "h".into();
+        t.acked_report_hash = "h".into();
+        t.last_review_item_hash = "h".into();
+        t.last_group = "idle".into();
+        t.last_state = "idle".into();
+    })
+    .unwrap();
+    std::fs::write(
+        thread::home_report_path(&project, &t.id),
+        format!("PR: {PR_URL}\n## Report\nx\n"),
+    )
+    .unwrap();
+    let head = fixture_git(&repo, &["rev-parse", "hp/demo/t-0001-task"]);
     world.runner.on(
-        "rev-parse --verify --quiet refs/heads/hp/demo/t-0001-task",
-        ok("merged-head\n"),
+        "gh pr view",
+        ok(&serde_json::json!({
+            "state": "MERGED", "reviewDecision": "APPROVED",
+            "headRefName": "hp/demo/t-0001-task", "headRefOid": head,
+            "headRepository": {"name": "app"}, "headRepositoryOwner": {"login": "owner"}
+        })
+        .to_string()),
     );
-    world.runner.on("branch -D", ok(""));
+    world.runner.on("workspace close", ok(r#"{"result":{}}"#));
+    set_agents(&world, &project, agent_state);
     (world, project)
 }
 
@@ -1842,9 +2241,19 @@ fn a_merged_thread_is_resolved_with_its_final_report_once_its_agent_is_done() {
             .unwrap()
             .contains("deployed")
     );
-    assert_eq!(world.runner.count("worktree remove"), 1);
-    // The head commit from this tick's `gh` check, not only from a saved file.
-    assert_eq!(world.runner.count("branch -D hp/demo/t-0001-task"), 1);
+    assert!(!Path::new(&t.cwd).exists());
+    // The merged head returned during this tick is used even before state saves.
+    assert!(
+        fixture_git(
+            Path::new(&t.repo),
+            &[
+                "for-each-ref",
+                "--format=%(objectname)",
+                &format!("refs/heads/{}", t.branch)
+            ]
+        )
+        .is_empty()
+    );
     assert!(items_of(&project, "pr")[0].summary.contains("state MERGED"));
     assert!(crate::steps::load_state(&project).merged_seen.is_empty());
 }
@@ -1872,7 +2281,7 @@ fn a_merged_thread_whose_agent_stays_idle_is_resolved_after_the_grace_period() {
 /// The agent's own progress report, as `herdr-projects report` writes it. The
 /// thread's pane is listed too, or the ticker drops the record as stale.
 fn thread_progress(world: &World, project: &Project, percent: u8, activity: &str) {
-    let cwd = world.home.path().to_string_lossy().into_owned();
+    let cwd = thread::load(project, "t-0001").unwrap().cwd;
     *world.panes.borrow_mut() = format!(
         "[{},{}]",
         world.coordinator_pane(project),
@@ -2011,16 +2420,16 @@ fn a_pull_request_opened_and_merged_between_two_passes_is_linked_and_its_branch_
     assert_eq!(thread::load(&project, "t-0001").unwrap().pr, PR_URL);
 
     threads::resolve(&ctx, "demo", "t-0001", &ResolveArgs::default()).unwrap();
-    assert_eq!(world.runner.count("branch -D hp/demo/t-0001-task"), 1);
-    let item = items_of(&project, "thread-state")
-        .into_iter()
-        .find(|i| i.summary.contains("resolved"))
-        .unwrap();
     assert!(
-        item.summary
-            .contains("deleted (its pull request is merged)"),
-        "{}",
-        item.summary
+        fixture_git(
+            Path::new(&t.repo),
+            &[
+                "for-each-ref",
+                "--format=%(objectname)",
+                &format!("refs/heads/{}", t.branch)
+            ]
+        )
+        .is_empty()
     );
 }
 
@@ -2048,22 +2457,19 @@ fn resolving_a_thread_with_an_unlinked_merged_pull_request_deletes_its_branch() 
             "pr_line={pr_line}"
         );
         assert_eq!(world.runner.count("gh pr list"), usize::from(!pr_line));
-        assert_eq!(
-            world.runner.count("branch -D hp/demo/t-0001-task"),
-            1,
+        assert!(
+            fixture_git(
+                Path::new(&t.repo),
+                &[
+                    "for-each-ref",
+                    "--format=%(objectname)",
+                    &format!("refs/heads/{}", t.branch)
+                ]
+            )
+            .is_empty(),
             "pr_line={pr_line}"
         );
         assert!(items_of(&project, "pr")[0].summary.contains("state MERGED"));
-        let item = items_of(&project, "thread-state")
-            .into_iter()
-            .find(|i| i.summary.contains("resolved"))
-            .unwrap();
-        assert!(
-            item.summary
-                .contains("deleted (its pull request is merged)"),
-            "{}",
-            item.summary
-        );
     }
 }
 
@@ -2102,9 +2508,16 @@ fn off_github_com_every_gh_call_goes_to_the_origin_host() {
             (Status::Resolved, PR_URL, "MERGED"),
             "pr_line={pr_line}"
         );
-        assert_eq!(
-            world.runner.count("branch -D hp/demo/t-0001-task"),
-            1,
+        assert!(
+            fixture_git(
+                Path::new(&t.repo),
+                &[
+                    "for-each-ref",
+                    "--format=%(objectname)",
+                    &format!("refs/heads/{}", t.branch)
+                ]
+            )
+            .is_empty(),
             "pr_line={pr_line}"
         );
         let calls = world.runner.calls.borrow();
@@ -3164,6 +3577,141 @@ fn a_tab_thread_with_a_repo_gets_its_brief_seconds_after_its_agent_is_ready() {
 }
 
 #[test]
+fn captured_native_omp_drafts_are_preserved_by_prompt_brief_and_quiet_nudge() {
+    // The visible pane from the Windows OMP 18.4 input-loss report, not a
+    // generated approximation of the prompt box.
+    let draft = include_str!("../tests/fixtures/prompt_box/omp-draft.ansi");
+    let empty = include_str!("../tests/fixtures/prompt_box/omp-empty.ansi");
+    assert_eq!(
+        crate::prompt_box::check("omp", draft),
+        crate::prompt_box::Draft::Typed
+    );
+    assert_eq!(
+        crate::prompt_box::check("omp", empty),
+        crate::prompt_box::Draft::Empty
+    );
+
+    let (world, project, t) = finished_world("done");
+    thread::update(&project, &t.id, |t| t.agent = "omp".into()).unwrap();
+    let mut agents: serde_json::Value = serde_json::from_str(&world.agents.borrow()).unwrap();
+    for agent in agents.as_array_mut().unwrap() {
+        agent["agent"] = "omp".into();
+    }
+    *world.agents.borrow_mut() = agents.to_string();
+    *world.screen.borrow_mut() = draft.into();
+    let task_path = thread::task_path(&project, &t.id);
+    let original_task = "The task, with HP_E2E_DRAFT_KEEP_740d6 in its notes.\n";
+    std::fs::write(&task_path, original_task).unwrap();
+    let ctx = world.ctx();
+
+    let refused = threads::prompt(&ctx, "demo", &t.id, "A new follow-up.")
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("draft_in_box"), "{refused}");
+    assert_eq!(world.runner.count("agent prompt"), 0);
+    assert_eq!(std::fs::read_to_string(&task_path).unwrap(), original_task);
+
+    let view = threads::session_view(&ctx, &project).unwrap();
+    thread::update(&project, &t.id, |t| t.prompt_pending = true).unwrap();
+    for sender in [crate::brief::Sender::Manual, crate::brief::Sender::Ticker] {
+        let record = thread::load(&project, &t.id).unwrap();
+        let agent = view
+            .agents
+            .iter()
+            .find(|a| thread::agent_matches(&record, a))
+            .unwrap();
+        let outcome = crate::brief::deliver(&project, &view.herdr, &record, agent, sender).unwrap();
+        assert!(
+            matches!(&outcome, crate::brief::Outcome::Waiting(why) if why.contains("holds text")),
+            "{outcome:?}"
+        );
+    }
+    assert_eq!(thread::load(&project, &t.id).unwrap().brief_attempts, 0);
+    assert_eq!(world.runner.count("agent prompt"), 0);
+    assert_eq!(world.runner.count("agent send-keys"), 0);
+    assert_eq!(*world.screen.borrow(), draft);
+
+    inbox::write(&project, "routine", "r", "due", "due", "").unwrap();
+    let now: jiff::Timestamp = "2026-10-05T00:00:00Z".parse().unwrap();
+    let live = coordinator::discover(
+        &project.coordinator().unwrap(),
+        &[],
+        &view.agents,
+        &now.to_string(),
+    );
+    coordinator::save_live(&project, &live).unwrap();
+    let pane = live.first().unwrap();
+    let settings = crate::project::Settings::default();
+    let mut state = crate::steps::State {
+        box_pane: pane.pane_id.clone(),
+        box_empty_since: "2026-01-01T00:00:00Z".into(),
+        ..Default::default()
+    };
+    crate::steps::nudge(
+        &project,
+        &mut state,
+        &settings,
+        &view.herdr,
+        Some(pane),
+        now,
+    )
+    .unwrap();
+    assert!(
+        state.box_empty_since.is_empty(),
+        "a draft restarts the quiet wait"
+    );
+    assert!(state.nudged.is_empty());
+    assert_eq!(world.runner.count("agent prompt"), 0);
+    assert_eq!(std::fs::read_to_string(&task_path).unwrap(), original_task);
+
+    *world.screen.borrow_mut() = empty.into();
+    crate::steps::nudge(
+        &project,
+        &mut state,
+        &settings,
+        &view.herdr,
+        Some(pane),
+        now,
+    )
+    .unwrap();
+    assert_eq!(world.runner.count("agent prompt"), 0);
+    assert!(!state.box_empty_since.is_empty());
+    let quiet = now
+        .checked_add(jiff::SignedDuration::from_secs(
+            crate::steps::NUDGE_QUIET_SECS,
+        ))
+        .unwrap();
+    for _ in 0..2 {
+        crate::steps::nudge(
+            &project,
+            &mut state,
+            &settings,
+            &view.herdr,
+            Some(pane),
+            quiet,
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        world.runner.count("agent prompt"),
+        1,
+        "one nudge after an empty quiet period"
+    );
+
+    thread::update(&project, &t.id, |t| t.prompt_pending = false).unwrap();
+    assert_eq!(
+        threads::prompt(&ctx, "demo", &t.id, "A new follow-up.").unwrap(),
+        "done"
+    );
+    assert_eq!(world.runner.count("agent prompt"), 2);
+    assert!(
+        std::fs::read_to_string(&task_path)
+            .unwrap()
+            .ends_with("A new follow-up.\n")
+    );
+}
+
+#[test]
 fn a_tab_thread_gets_a_brief_with_the_project_header_and_prompts_are_recorded() {
     let world = World::new();
     let project = world.project("demo", "a.sock");
@@ -3276,29 +3824,43 @@ fn a_tab_thread_gets_a_brief_with_the_project_header_and_prompts_are_recorded() 
 }
 
 #[test]
-fn sweep_leaves_kept_worktrees_and_copies_a_resolved_threads_files_first() {
+fn sweep_real_git_keeps_requested_worktrees_and_removes_unowned_allocations() {
     let world = World::new();
     let project = world.project("demo", "a.sock");
-    let kept = world.thread(&project, world.home.path(), |t| {
+    let kept = cleanup_worktree(&world, &project, |t| {
         t.status = Status::Resolved;
-        t.branch = "hp/demo/t-0001-kept".into();
-        t.worktree_path = "/wt/kept".into();
         t.kept_worktree = true;
     });
-    let _ = kept;
-    let text = std::fs::read_to_string(project.project_md()).unwrap();
-    std::fs::write(
-        project.project_md(),
-        text.replacen("repos = []", "[[repos]]\npath = \"/repo\"", 1),
-    )
-    .unwrap();
-    world.runner.on("worktree list --porcelain", ok("worktree /repo\nbranch refs/heads/main\n\nworktree /wt/kept\nbranch refs/heads/hp/demo/t-0001-kept\n\nworktree /wt/stray\nbranch refs/heads/hp/demo/t-0042-stray\n"));
-    world.runner.on("for-each-ref", ok(""));
-    let orphans = crate::sweep::find(&world.ctx(), &project);
-    assert_eq!(orphans.len(), 1, "{orphans:?}");
-    assert!(
-        matches!(&orphans[0], crate::sweep::Orphan::Worktree { path, thread: None, .. } if path == "/wt/stray")
+    let stray = world.home.path().join("stray");
+    fixture_git(
+        Path::new(&kept.repo),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "hp/demo/t-0042-stray",
+            &stray.to_string_lossy(),
+        ],
     );
+    *world.panes.borrow_mut() = format!(
+        "[{}]",
+        pane_json("w9", "w9:t1", "w9:p1", &stray.to_string_lossy())
+    );
+    crate::sweep::run(&world.ctx(), "demo", false, true).unwrap();
+    assert!(!stray.exists());
+    assert_eq!(
+        std::fs::read_to_string(Path::new(&kept.worktree_path).join("data.txt")).unwrap(),
+        "must survive a refusal"
+    );
+    assert_eq!(
+        thread::load(&project, &kept.id).unwrap().worktree_path,
+        kept.worktree_path
+    );
+    assert_eq!(world.runner.count("workspace close"), 0);
+    let listed = fixture_git(Path::new(&kept.repo), &["worktree", "list", "--porcelain"]);
+    assert!(listed.contains(&kept.branch));
+    assert!(!listed.contains("hp/demo/t-0042-stray"));
 }
 
 // ------------------------------------------------------- open in this pane

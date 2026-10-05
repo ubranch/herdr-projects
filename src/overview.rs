@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
-use crate::paths::Ctx;
+use crate::paths::{self, Ctx};
 use crate::project::{self, Project, Status};
 use crate::thread::{self, Group};
 use crate::threads::{self, Row};
@@ -27,7 +27,7 @@ pub fn project_for_workspace(ctx: &Ctx, workspace_id: &str, socket: &str) -> Opt
         .filter(|p| p.status() != Status::Archived)
         .filter_map(|p| {
             p.coordinator()
-                .filter(|r| r.socket == socket)
+                .filter(|r| paths::socket_ref(&r.socket) == paths::socket_ref(socket))
                 .map(|r| (p, r))
         })
         .collect();
@@ -333,6 +333,60 @@ mod tests {
         assert_eq!(project_for_workspace(&ctx, "w7", &b_socket), None);
         assert_eq!(project_for_workspace(&ctx, "w9", &a_socket), None);
         assert_eq!(project_for_workspace(&ctx, "", &a_socket), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn current_project_accepts_windows_socket_separators_but_excludes_other_sessions() {
+        let world = World::new();
+        std::fs::create_dir_all(world.home.path().join("other")).unwrap();
+        let alpha = world.project("alpha", "other/herdr.sock");
+        let beta = world.project("beta", "herdr.sock");
+        let socket = crate::paths::canonicalize(&beta.coordinator().unwrap().socket).unwrap();
+        let recorded = socket.to_str().unwrap();
+        beta.update_coordinator(|record| record.socket = recorded.into())
+            .unwrap();
+        let mixed = format!(
+            "{}\\herdr.sock",
+            socket
+                .parent()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace('\\', "/")
+        );
+        assert_ne!(recorded, mixed);
+        *world.panes.borrow_mut() = format!(
+            "[{}]",
+            crate::scenarios::pane_json(
+                "w3",
+                "w3:t1",
+                "w3:p1",
+                &beta.canonical_dir().to_string_lossy()
+            )
+        );
+        let env = crate::paths::Env::for_test(
+            world.home.path(),
+            &[
+                ("HERDR_WORKSPACE_ID", "w3"),
+                ("HERDR_PANE_ID", "w3:p1"),
+                ("HERDR_SOCKET_PATH", &mixed),
+            ],
+        );
+        let mut ctx = world.ctx();
+        ctx.env = &env;
+        assert_eq!(resolve_slug_quiet(&ctx).as_deref(), Some("beta"));
+        assert_eq!(
+            project_for_workspace(&ctx, "w1", &mixed).as_deref(),
+            Some("beta")
+        );
+        // Same basename and pane cwd cannot cross into a different session.
+        let other_socket = alpha.coordinator().unwrap().socket;
+        assert_eq!(project_for_workspace(&ctx, "w3", &other_socket), None);
+        assert_eq!(
+            project_for_workspace(&ctx, "w1", &other_socket).as_deref(),
+            Some("alpha")
+        );
     }
 
     #[test]

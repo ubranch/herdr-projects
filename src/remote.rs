@@ -460,6 +460,52 @@ pub fn fetch_file(
     Ok(())
 }
 
+/// Local Windows paths use the prefix-independent Cygwin/MSYS2 drive mount.
+#[cfg(windows)]
+fn rsync_local_destination(path: &Path) -> Result<String> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Prefix};
+
+    let (head, drive, skip, posix) = match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                if !path.has_root() {
+                    bail!(
+                        "rsync local destination with a drive prefix must be absolute: {}",
+                        path.display()
+                    );
+                }
+                (
+                    "/proc/cygdrive/",
+                    Some(drive.to_ascii_lowercase()),
+                    prefix.as_os_str().len(),
+                    true,
+                )
+            }
+            // Replace the ASCII \\?\UNC\ namespace prefix with //.
+            Prefix::VerbatimUNC(_, _) => ("//", None, 8, true),
+            Prefix::UNC(_, _) => ("", None, 0, true),
+            _ => ("", None, 0, false),
+        },
+        _ => ("", None, 0, false),
+    };
+    let mut destination = String::with_capacity(
+        path.as_os_str().len() - skip + head.len() + usize::from(drive.is_some()) + 1,
+    );
+    destination.push_str(head);
+    if let Some(drive) = drive {
+        destination.push(char::from(drive));
+    }
+    for c in char::decode_utf16(path.as_os_str().encode_wide().skip(skip)) {
+        let c = c.unwrap_or(char::REPLACEMENT_CHARACTER);
+        destination.push(if posix && c == '\\' { '/' } else { c });
+    }
+    if !destination.ends_with('/') {
+        destination.push('/');
+    }
+    Ok(destination)
+}
+
 /// `rsync -rt` over ssh, without `-l`, so symbolic links are skipped.
 pub fn fetch_dir(
     runner: &dyn Runner,
@@ -473,13 +519,17 @@ pub fn fetch_dir(
             "the library path on {target} has characters rsync cannot carry safely; it was not copied"
         );
     }
+    #[cfg(windows)]
+    let destination = rsync_local_destination(local_dir)?;
+    #[cfg(not(windows))]
+    let destination = format!("{}/", local_dir.to_string_lossy());
     let out = runner.run(&Cmd::new("rsync", COPY_TIMEOUT).args([
         "-rt".to_string(),
         "-e".to_string(),
         format!("ssh {}", SSH_OPTIONS.join(" ")),
         "--".to_string(),
         format!("{target}:{remote_dir}/"),
-        format!("{}/", local_dir.to_string_lossy()),
+        destination,
     ]))?;
     if !out.success() {
         bail!("rsync from {target}: {}", out.error_text());
@@ -802,6 +852,33 @@ mod tests {
                 .to_string()
                 .contains("herdr-projects update")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rsync_local_destinations_preserve_windows_path_boundaries() {
+        for (native, posix) in [
+            (r"D:\work\library", "/proc/cygdrive/d/work/library/"),
+            (r"C:/work/library", "/proc/cygdrive/c/work/library/"),
+            (r"\\?\D:\work\library", "/proc/cygdrive/d/work/library/"),
+            (r"D:\", "/proc/cygdrive/d/"),
+            (r"\\server\share\library", "//server/share/library/"),
+            (r"\\?\UNC\server\share\library", "//server/share/library/"),
+            (r"work\library", r"work\library/"),
+            (r"\work\library", r"\work\library/"),
+            (
+                r"C:\Zoë's library\東京 🦀",
+                "/proc/cygdrive/c/Zoë's library/東京 🦀/",
+            ),
+        ] {
+            assert_eq!(
+                rsync_local_destination(Path::new(native)).unwrap(),
+                posix,
+                "{native}"
+            );
+        }
+        let error = rsync_local_destination(Path::new(r"C:library")).unwrap_err();
+        assert!(error.to_string().contains("drive prefix must be absolute"));
     }
 
     #[test]

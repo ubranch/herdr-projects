@@ -185,6 +185,28 @@ pub fn within_dir(path: &Path, dir: &Path) -> bool {
         .starts_with(canonical_dir.as_deref().unwrap_or(dir))
 }
 
+/// Session identity stays opaque on Unix; Windows compares native path components.
+#[cfg(windows)]
+pub type SocketKey = PathBuf;
+#[cfg(not(windows))]
+pub type SocketKey = String;
+
+#[cfg(windows)]
+pub fn socket_ref(socket: &str) -> &Path {
+    Path::new(socket)
+}
+
+#[cfg(not(windows))]
+pub fn socket_ref(socket: &str) -> &str {
+    socket
+}
+
+pub fn socket_key(socket: String) -> SocketKey {
+    #[cfg(windows)]
+    let socket = PathBuf::from(socket);
+    socket
+}
+
 #[cfg(all(test, windows))]
 pub fn windows_cmd() -> PathBuf {
     let root = std::env::var_os("SystemRoot").expect("Windows test process has SystemRoot");
@@ -200,6 +222,15 @@ pub struct Ctx<'a> {
     pub runner: &'a dyn Runner,
     /// False in tests, so commands that ensure a ticker never spawn a process.
     pub detached_ticker: bool,
+}
+
+impl Ctx<'_> {
+    /// Run Root data migrations once, before dispatch and before taking command locks.
+    pub fn initialize(self) -> Result<Self> {
+        #[cfg(windows)]
+        crate::progress::migrate(&self.root)?;
+        Ok(self)
+    }
 }
 
 /// The part of `config.toml` that resolution needs. Safety tables are read by
@@ -317,6 +348,36 @@ mod tests {
     const SESSIONS: &str = r#"{"sessions":[
         {"default":true,"name":"default","running":true,"session_dir":"/h/.config/herdr","socket_path":"/h/.config/herdr/herdr.sock"},
         {"default":false,"name":"hp-dev","running":true,"session_dir":"/h/.config/herdr/sessions/hp-dev","socket_path":"/h/.config/herdr/sessions/hp-dev/herdr.sock"}]}"#;
+
+    #[test]
+    fn socket_identity_is_native_on_windows_and_opaque_on_unix() {
+        let native = r"C:\config\herdr\sessions\one\herdr.sock";
+        let mixed = r"C:/config/herdr\sessions\one\herdr.sock";
+        assert_eq!(socket_ref(native) == socket_ref(mixed), cfg!(windows));
+        let mut keys = std::collections::HashSet::<SocketKey>::new();
+        assert!(keys.insert(socket_ref(native).to_owned()));
+        assert_eq!(keys.insert(socket_ref(mixed).to_owned()), !cfg!(windows));
+        assert!(keys.insert(socket_ref(r"C:\config\herdr\sessions\two\herdr.sock").to_owned()));
+        assert_ne!(
+            socket_ref("/config/herdr.sock"),
+            socket_ref("config/herdr.sock")
+        );
+        #[cfg(not(windows))]
+        {
+            assert_ne!(
+                socket_ref("/config/./herdr.sock"),
+                socket_ref("/config/herdr.sock")
+            );
+            assert_ne!(
+                socket_ref("/config//herdr.sock"),
+                socket_ref("/config/herdr.sock")
+            );
+            assert_ne!(
+                socket_ref("/Config/herdr.sock"),
+                socket_ref("/config/herdr.sock")
+            );
+        }
+    }
 
     #[test]
     fn root_order_flag_env_config_default() {

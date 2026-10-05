@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::herdr::{CALL_TIMEOUT, Herdr};
-use crate::paths::{Ctx, Env};
+use crate::paths::{self, Ctx, Env};
 use crate::runner::Runner;
 
 pub const ACTIVITY_COLUMNS: usize = 40;
@@ -72,32 +73,278 @@ pub fn dir(root: &Path) -> PathBuf {
 
 /// `<pane id>-<short hash of the socket path>.json`: pane ids repeat across sessions.
 pub fn path(root: &Path, socket: &str, pane_id: &str) -> PathBuf {
-    let hash = &crate::thread::sha256_hex(socket.as_bytes())[..8];
-    dir(root).join(format!("{}-{hash}.json", pane_id.replace(':', "_")))
+    let mut hash = Sha256::new();
+    #[cfg(not(windows))]
+    hash.update(socket.as_bytes());
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut separator = false;
+        // Match Path identity without changing calls or existing native backslash hashes.
+        for component in paths::socket_ref(socket).components() {
+            match component {
+                Component::Prefix(prefix) => match prefix.kind() {
+                    Prefix::Disk(drive) => hash.update([drive, b':']),
+                    Prefix::VerbatimDisk(drive) => {
+                        hash.update(b"\\\\?\\");
+                        hash.update([drive, b':']);
+                    }
+                    Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                        hash.update(if prefix.kind().is_verbatim() {
+                            &b"\\\\?\\UNC\\"[..]
+                        } else {
+                            &b"\\\\"[..]
+                        });
+                        hash.update(server.as_encoded_bytes());
+                        hash.update(b"\\");
+                        hash.update(share.as_encoded_bytes());
+                    }
+                    Prefix::DeviceNS(name) | Prefix::Verbatim(name) => {
+                        hash.update(if prefix.kind().is_verbatim() {
+                            &b"\\\\?\\"[..]
+                        } else {
+                            &b"\\\\.\\"[..]
+                        });
+                        hash.update(name.as_encoded_bytes());
+                    }
+                },
+                Component::RootDir => {
+                    hash.update(b"\\");
+                    separator = false;
+                }
+                Component::CurDir | Component::ParentDir | Component::Normal(_) => {
+                    if separator {
+                        hash.update(b"\\");
+                    }
+                    hash.update(component.as_os_str().as_encoded_bytes());
+                    separator = true;
+                }
+            }
+        }
+    }
+    hashed_path(root, pane_id, &hash.finalize())
+}
+
+fn hashed_path(root: &Path, pane_id: &str, hash: &[u8]) -> PathBuf {
+    dir(root).join(format!(
+        "{}-{:02x}{:02x}{:02x}{:02x}.json",
+        pane_id.replace(':', "_"),
+        hash[0],
+        hash[1],
+        hash[2],
+        hash[3]
+    ))
 }
 
 pub fn load(root: &Path, socket: &str, pane_id: &str) -> Option<Record> {
-    crate::project::read_json(&path(root, socket, pane_id))
+    crate::project::read_json::<Record>(&path(root, socket, pane_id)).filter(|record| {
+        record.pane_id == pane_id && paths::socket_ref(&record.socket) == paths::socket_ref(socket)
+    })
 }
 
 pub fn save(root: &Path, record: &Record) -> Result<()> {
     std::fs::create_dir_all(dir(root))?;
+    #[cfg(windows)]
+    let _lock = lock(root)?;
     crate::project::write_json(&path(root, &record.socket, &record.pane_id), record)
 }
 
-pub fn remove(root: &Path, socket: &str, pane_id: &str) {
-    let _ = std::fs::remove_file(path(root, socket, pane_id));
+/// Upgrade each owned legacy filename once, before any command reads progress.
+/// Unix socket strings and their existing filenames have not changed.
+#[cfg(windows)]
+pub(crate) fn migrate(root: &Path) -> Result<()> {
+    let progress = dir(root);
+    if !plain_metadata(&progress).is_some_and(|meta| meta.is_dir()) {
+        return Ok(());
+    }
+    if migration_done(&progress)? {
+        return Ok(());
+    }
+    if !plain_metadata(root).is_some_and(|meta| meta.is_dir())
+        || !paths::within_dir(&progress, root)
+    {
+        return Ok(());
+    }
+    let _lock = lock(root)?;
+    if !plain_metadata(&progress).is_some_and(|meta| meta.is_dir()) {
+        return Ok(());
+    }
+    if migration_done(&progress)? {
+        return Ok(());
+    }
+    let Ok(entries) = std::fs::read_dir(&progress) else {
+        return Ok(());
+    };
+    let mut legacy = Vec::new();
+    let mut complete = true;
+    for entry in entries {
+        let Ok(entry) = entry else {
+            complete = false;
+            continue;
+        };
+        let source = entry.path();
+        match owned_record(root, &source) {
+            Ok(Some((record, destination))) if source != destination => {
+                legacy.push((source, destination, record));
+            }
+            Err(_) => complete = false,
+            _ => {}
+        }
+    }
+    // If only aliases exist, the newest complete record becomes canonical.
+    // Existing canonical terminal/session ownership always takes precedence.
+    legacy.sort_by(|left, right| {
+        revision(&right.2)
+            .cmp(&revision(&left.2))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    for (source, destination, record) in legacy {
+        match std::fs::symlink_metadata(&destination) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::rename(&source, &destination)?;
+            }
+            Ok(_) => {
+                let Ok(Some((canonical, _))) = owned_record(root, &destination) else {
+                    complete = false;
+                    continue;
+                };
+                if paths::socket_ref(&canonical.socket) != paths::socket_ref(&record.socket)
+                    || canonical.pane_id != record.pane_id
+                {
+                    complete = false;
+                    continue;
+                }
+                if canonical.terminal_id != record.terminal_id
+                    || canonical.session_id != record.session_id
+                {
+                    continue;
+                }
+                if revision(&record) > revision(&canonical) {
+                    crate::project::write_json(&destination, &record)?;
+                }
+                std::fs::remove_file(&source)?;
+            }
+            Err(_) => complete = false,
+        }
+    }
+    if complete {
+        crate::project::write_atomic(&progress.join(MIGRATION_MARKER), MIGRATION_DONE)?;
+    }
+    Ok(())
 }
 
-/// Every record under the root, for the ticker's cleanup.
-pub fn all(root: &Path) -> Vec<Record> {
-    let Ok(entries) = std::fs::read_dir(dir(root)) else {
-        return Vec::new();
+#[cfg(windows)]
+const MIGRATION_MARKER: &str = ".canonical-sockets-v1";
+#[cfg(windows)]
+const MIGRATION_DONE: &[u8] = b"herdr-projects progress canonical sockets 1\n";
+
+#[cfg(windows)]
+fn migration_done(progress: &Path) -> Result<bool> {
+    let marker = progress.join(MIGRATION_MARKER);
+    match std::fs::symlink_metadata(&marker) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+        Ok(_) => {
+            if plain_metadata(&marker)
+                .is_some_and(|meta| meta.is_file() && meta.len() == MIGRATION_DONE.len() as u64)
+                && std::fs::read(&marker)? == MIGRATION_DONE
+            {
+                Ok(true)
+            } else {
+                bail!(
+                    "refusing foreign progress migration marker {}",
+                    marker.display()
+                );
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn revision(record: &Record) -> (i64, i64, i64) {
+    (
+        record.session_started_at,
+        record.reported_at,
+        record.reminded_at,
+    )
+}
+
+#[cfg(windows)]
+fn plain_metadata(path: &Path) -> Option<std::fs::Metadata> {
+    use std::os::windows::fs::MetadataExt;
+    std::fs::symlink_metadata(path)
+        .ok()
+        .filter(|meta| meta.file_attributes() & 0x400 == 0)
+}
+
+#[cfg(windows)]
+fn lock(root: &Path) -> Result<std::fs::File> {
+    let token = root.join(".progress.lock");
+    match std::fs::symlink_metadata(&token) {
+        Ok(_) if !plain_metadata(&token).is_some_and(|meta| meta.is_file() && meta.len() == 0) => {
+            bail!("refusing foreign progress lock {}", token.display());
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
+    }
+    let file = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(token)?;
+    file.lock()?;
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn owned_record(root: &Path, file: &Path) -> std::io::Result<Option<(Record, PathBuf)>> {
+    use std::os::windows::fs::MetadataExt;
+    let progress = dir(root);
+    let named = file
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.rsplit_once('-'))
+        .is_some_and(|(pane, hash)| {
+            !pane.is_empty() && hash.len() == 8 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        });
+    if !named
+        || file.extension() != Some(std::ffi::OsStr::new("json"))
+        || file.parent() != Some(progress.as_path())
+    {
+        return Ok(None);
+    }
+    let metadata = std::fs::symlink_metadata(file)?;
+    if !metadata.is_file()
+        || metadata.file_attributes() & 0x400 != 0
+        || !paths::within_dir(file, &progress)
+    {
+        return Ok(None);
+    }
+    let contents = std::fs::read(file)?;
+    let Ok(record) = serde_json::from_slice::<Record>(&contents) else {
+        return Ok(None);
     };
-    entries
-        .flatten()
-        .filter_map(|e| crate::project::read_json::<Record>(&e.path()))
-        .collect()
+    if record.socket.is_empty()
+        || record.pane_id.is_empty()
+        || record.percent.is_some_and(|percent| percent > 100)
+    {
+        return Ok(None);
+    }
+    let destination = path(root, &record.socket, &record.pane_id);
+    if destination.parent() != Some(progress.as_path()) {
+        return Ok(None);
+    }
+    if file != destination
+        && file
+            != hashed_path(
+                root,
+                &record.pane_id,
+                &Sha256::digest(record.socket.as_bytes()),
+            )
+    {
+        return Ok(None);
+    }
+    Ok(Some((record, destination)))
 }
 
 /// At most 40 columns, no control or bidi characters, trimmed. 100% is "Done".
@@ -460,9 +707,33 @@ pub fn self_report(root: &Path, socket: &str, pane_id: &str, terminal_id: &str) 
 /// Drops records whose pane is no longer listed in the session they belong to.
 /// Only records of `socket` are judged: other sessions' records are theirs.
 pub fn prune(root: &Path, socket: &str, live_pane_ids: &[String]) {
-    for record in all(root) {
-        if record.socket == socket && !live_pane_ids.contains(&record.pane_id) {
-            remove(root, &record.socket, &record.pane_id);
+    #[cfg(windows)]
+    if !plain_metadata(&dir(root)).is_some_and(|meta| meta.is_dir()) {
+        return;
+    }
+    #[cfg(windows)]
+    let Ok(_lock) = lock(root) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir(root)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        #[cfg(windows)]
+        let record = owned_record(root, &path)
+            .ok()
+            .flatten()
+            .map(|(record, _)| record);
+        #[cfg(not(windows))]
+        let record = crate::project::read_json::<Record>(&path);
+        let Some(record) = record else {
+            continue;
+        };
+        if paths::socket_ref(&record.socket) == paths::socket_ref(socket)
+            && !live_pane_ids.contains(&record.pane_id)
+        {
+            let _ = std::fs::remove_file(path);
         }
     }
 }
@@ -471,6 +742,312 @@ pub fn prune(root: &Path, socket: &str, live_pane_ids: &[String]) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn initialize(root: &Path) -> Result<()> {
+        let env = Env::for_test(root, &[]);
+        let runner = crate::runner::fake::FakeRunner::new();
+        Ctx {
+            env: &env,
+            root: root.into(),
+            config_dir: root.join("cfg"),
+            runner: &runner,
+            detached_ticker: false,
+        }
+        .initialize()
+        .map(|_| ())
+    }
+
+    #[cfg(windows)]
+    fn persist_legacy(root: &Path, record: &Record) -> PathBuf {
+        std::fs::create_dir_all(dir(root)).unwrap();
+        let file = dir(root).join(format!(
+            "{}-{}.json",
+            record.pane_id.replace(':', "_"),
+            &crate::thread::sha256_hex(record.socket.as_bytes())[..8]
+        ));
+        crate::project::write_json(&file, record).unwrap();
+        file
+    }
+
+    #[test]
+    fn context_initialization_does_not_create_root_or_progress_for_readers() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("absent");
+        initialize(&root).unwrap();
+        assert!(!root.exists());
+        std::fs::create_dir(&root).unwrap();
+        initialize(&root).unwrap();
+        assert!(!dir(&root).exists());
+        assert!(!root.join(".progress.lock").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn context_migrates_alias_only_progress_once_and_consumers_keep_identity() {
+        let native = r"C:\config\herdr\sessions\one\herdr.sock";
+        let mixed = r"C:/config/herdr\sessions\one\herdr.sock";
+        for socket in [
+            mixed,
+            r"c:\config\herdr\sessions\one\herdr.sock",
+            r"c:\config\\herdr\.\sessions\one\herdr.sock",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let report = Record {
+                socket: socket.into(),
+                pane_id: "w3:p1".into(),
+                terminal_id: "terminal-one".into(),
+                session_id: "harness-one".into(),
+                activity: "Testing".into(),
+                percent: Some(73),
+                reported_at: 10,
+                session_started_at: 1,
+                ..Record::default()
+            };
+            let legacy = persist_legacy(root.path(), &report);
+            let other = Record {
+                socket: r"C:/config/herdr/sessions/two/herdr.sock".into(),
+                terminal_id: "terminal-two".into(),
+                session_id: "harness-two".into(),
+                percent: Some(41),
+                ..report.clone()
+            };
+            let other_legacy = persist_legacy(root.path(), &other);
+            assert!(load(root.path(), native, &report.pane_id).is_none());
+            initialize(root.path()).unwrap();
+            for alias in [native, mixed, socket] {
+                assert_eq!(
+                    self_report(root.path(), alias, &report.pane_id, "terminal-one"),
+                    Some(report.clone())
+                );
+                assert!(self_report(root.path(), alias, &report.pane_id, "terminal-two").is_none());
+            }
+            assert_eq!(
+                self_report(root.path(), &other.socket, &other.pane_id, "terminal-two"),
+                Some(other)
+            );
+            assert!(!legacy.exists());
+            assert!(!other_legacy.exists());
+            assert!(migration_done(&dir(root.path())).unwrap());
+
+            // The cutover is persistent, not an alias fallback on every invocation.
+            let late = Record {
+                percent: Some(99),
+                reported_at: 100,
+                ..report.clone()
+            };
+            persist_legacy(root.path(), &late);
+            initialize(root.path()).unwrap();
+            assert_eq!(load(root.path(), native, &report.pane_id), Some(report));
+            assert!(legacy.exists());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn migration_prefers_newest_same_identity_and_existing_current_terminal() {
+        for case in 0..4 {
+            let root = tempfile::tempdir().unwrap();
+            let legacy = Record {
+                socket: r"C:/config/herdr/sessions/one/herdr.sock".into(),
+                pane_id: "w3:p1".into(),
+                terminal_id: "terminal-one".into(),
+                session_id: "harness-one".into(),
+                percent: Some(73),
+                reported_at: 10,
+                ..Record::default()
+            };
+            let mut canonical = Record {
+                socket: r"C:\config\herdr\sessions\one\herdr.sock".into(),
+                percent: Some(41),
+                reported_at: if case == 1 { 20 } else { 5 },
+                ..legacy.clone()
+            };
+            if case == 2 {
+                canonical.terminal_id = "current-terminal".into();
+            }
+            if case == 3 {
+                canonical.session_id = "current-harness".into();
+            }
+            save(root.path(), &canonical).unwrap();
+            let alias = persist_legacy(root.path(), &legacy);
+            initialize(root.path()).unwrap();
+            let expected = if case == 0 { &legacy } else { &canonical };
+            for socket in [&legacy.socket, &canonical.socket] {
+                assert_eq!(
+                    self_report(
+                        root.path(),
+                        socket,
+                        &expected.pane_id,
+                        &expected.terminal_id
+                    ),
+                    Some(expected.clone())
+                );
+            }
+            assert!(migration_done(&dir(root.path())).unwrap());
+            if case >= 2 {
+                // Different terminal/harness records are preserved, never merged.
+                assert_eq!(crate::project::read_json::<Record>(&alias), Some(legacy));
+            } else {
+                assert!(!alias.exists());
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn migration_preserves_foreign_files_and_does_not_mark_blocked_owned_aliases_done() {
+        let root = tempfile::tempdir().unwrap();
+        let report = Record {
+            socket: r"C:/config/herdr/sessions/one/herdr.sock".into(),
+            pane_id: "w3:p1".into(),
+            terminal_id: "terminal-one".into(),
+            session_id: "harness-one".into(),
+            percent: Some(73),
+            reported_at: 10,
+            ..Record::default()
+        };
+        let legacy = persist_legacy(root.path(), &report);
+        let canonical = path(root.path(), &report.socket, &report.pane_id);
+        std::fs::write(&canonical, b"foreign canonical").unwrap();
+        let unrelated = dir(root.path()).join("unrelated.json");
+        crate::project::write_json(&unrelated, &report).unwrap();
+        let malformed = dir(root.path()).join("w9_p9-deadbeef.json");
+        std::fs::write(&malformed, [0xff]).unwrap();
+        let unsafe_pane = dir(root.path()).join("outside-deadbeef.json");
+        let unsafe_report = Record {
+            pane_id: "../outside".into(),
+            ..report.clone()
+        };
+        crate::project::write_json(&unsafe_pane, &unsafe_report).unwrap();
+        initialize(root.path()).unwrap();
+        assert!(legacy.exists());
+        assert!(!migration_done(&dir(root.path())).unwrap());
+        assert_eq!(std::fs::read(&canonical).unwrap(), b"foreign canonical");
+        assert_eq!(
+            crate::project::read_json::<Record>(&unrelated),
+            Some(report.clone())
+        );
+        assert_eq!(std::fs::read(&malformed).unwrap(), [0xff]);
+        assert_eq!(
+            crate::project::read_json::<Record>(&unsafe_pane),
+            Some(unsafe_report)
+        );
+
+        std::fs::remove_file(&canonical).unwrap();
+        initialize(root.path()).unwrap();
+        assert_eq!(
+            self_report(
+                root.path(),
+                &report.socket,
+                &report.pane_id,
+                &report.terminal_id
+            ),
+            Some(report)
+        );
+        assert!(!legacy.exists());
+        assert!(migration_done(&dir(root.path())).unwrap());
+        prune(root.path(), r"C:\config\herdr\sessions\one\herdr.sock", &[]);
+        assert!(unrelated.exists());
+        assert!(malformed.exists());
+        assert!(unsafe_pane.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn context_does_not_trust_or_replace_a_foreign_migration_marker() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir(root.path())).unwrap();
+        let marker = dir(root.path()).join(MIGRATION_MARKER);
+        std::fs::write(&marker, b"foreign").unwrap();
+        assert!(initialize(root.path()).is_err());
+        assert_eq!(std::fs::read(marker).unwrap(), b"foreign");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn progress_socket_aliases_load_native_records_without_merging_sessions() {
+        let root = tempfile::tempdir().unwrap();
+        let native = r"C:\config\herdr\sessions\one\herdr.sock";
+        let mixed = r"C:/config/herdr\sessions\one\herdr.sock";
+        let other = r"C:\config\herdr\sessions\two\herdr.sock";
+        let pane = "w3:p1";
+        let report = Record {
+            socket: native.into(),
+            pane_id: pane.into(),
+            terminal_id: "terminal-one".into(),
+            percent: Some(73),
+            reported_at: 1,
+            ..Record::default()
+        };
+        // Persist the pre-normalization native filename, not the current path helper.
+        std::fs::create_dir_all(dir(root.path())).unwrap();
+        let native_file = dir(root.path()).join(format!(
+            "w3_p1-{}.json",
+            &crate::thread::sha256_hex(native.as_bytes())[..8]
+        ));
+        crate::project::write_json(&native_file, &report).unwrap();
+        initialize(root.path()).unwrap();
+        for alias in [native, mixed, r"c:\config\\herdr\.\sessions\one\herdr.sock"] {
+            assert_eq!(
+                self_report(root.path(), alias, pane, "terminal-one"),
+                Some(report.clone())
+            );
+            assert!(self_report(root.path(), alias, pane, "different-terminal").is_none());
+        }
+        assert!(self_report(root.path(), other, pane, "terminal-one").is_none());
+        let legacy = dir(root.path()).join(format!(
+            "w3_p1-{}.json",
+            &crate::thread::sha256_hex(mixed.as_bytes())[..8]
+        ));
+        crate::project::write_json(
+            &legacy,
+            &Record {
+                socket: mixed.into(),
+                ..report.clone()
+            },
+        )
+        .unwrap();
+        let other_report = Record {
+            socket: other.into(),
+            percent: Some(41),
+            ..report.clone()
+        };
+        save(root.path(), &other_report).unwrap();
+        prune(root.path(), native, &[pane.into()]);
+        assert_eq!(load(root.path(), mixed, pane), Some(report));
+        assert!(legacy.exists());
+        prune(root.path(), native, &[]);
+        assert!(load(root.path(), mixed, pane).is_none());
+        assert!(!legacy.exists());
+        assert_eq!(load(root.path(), other, pane), Some(other_report));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_progress_keeps_distinct_opaque_socket_records() {
+        let root = tempfile::tempdir().unwrap();
+        let report = Record {
+            socket: "/config/herdr.sock".into(),
+            pane_id: "w3:p1".into(),
+            percent: Some(73),
+            reported_at: 1,
+            ..Record::default()
+        };
+        save(root.path(), &report).unwrap();
+        initialize(root.path()).unwrap();
+        assert_eq!(
+            load(root.path(), "/config/herdr.sock", "w3:p1"),
+            Some(report)
+        );
+        for socket in [
+            "/config/./herdr.sock",
+            "/config//herdr.sock",
+            r"/config\herdr.sock",
+            "/config/HERDR.sock",
+        ] {
+            assert!(load(root.path(), socket, "w3:p1").is_none());
+        }
+    }
 
     #[test]
     fn activity_is_cleaned_and_capped_at_forty_columns() {

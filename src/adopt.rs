@@ -33,7 +33,7 @@ pub fn adoptable_agent(ctx: &Ctx, herdr: &Herdr, socket: &str, pane: &str) -> Re
         let Some(record) = other.coordinator() else {
             continue;
         };
-        if record.socket != socket {
+        if paths::socket_ref(&record.socket) != paths::socket_ref(socket) {
             continue;
         }
         if coordinator::is_coordinator(&record, &agent) {

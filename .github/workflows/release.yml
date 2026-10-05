@@ -23,6 +23,8 @@ env:
 
 jobs:
   build:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +58,7 @@ jobs:
         with:
           ref: refs/tags/${{ env.TAG }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Check the tag matches the manifest and Cargo.toml
         run: |
@@ -70,8 +73,20 @@ jobs:
       - name: Install Rust
         shell: bash
         run: |
-          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy --target ${{ matrix.target }}
           rustup default stable
+
+      - name: Check formatting
+        if: matrix.runs
+        run: cargo fmt --all -- --check
+
+      - name: Check native targets without warnings
+        if: matrix.runs
+        run: cargo clippy --locked --all-targets --target ${{ matrix.target }} -- -D warnings
+
+      - name: Test the native release source
+        if: matrix.runs
+        run: cargo test --locked --all-targets --target ${{ matrix.target }}
 
       - name: Build
         shell: bash
@@ -139,3 +154,70 @@ jobs:
             printf '%s\n' "$names" | grep -qx "$asset" || { echo "::error::release $TAG has no $asset"; exit 1; }
           done
           echo "release $TAG carries all binaries and SHA256SUMS"
+
+  install-smoke:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install the published binary and exercise the CLI
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          import tempfile
+
+          with tempfile.TemporaryDirectory(prefix='release-install-', dir=os.environ['RUNNER_TEMP']) as temporary:
+              home = pathlib.Path(temporary, 'home')
+              home.mkdir()
+              environment = dict(os.environ, HOME=str(home), USERPROFILE=str(home),
+                                 HERDR_HOME=str(home / '.herdr'), HERDR_BIN_DIR=str(home / 'bin'),
+                                 XDG_CONFIG_HOME=str(home / '.config'), XDG_DATA_HOME=str(home / '.local' / 'share'),
+                                 XDG_STATE_HOME=str(home / '.local' / 'state'), XDG_CACHE_HOME=str(home / '.cache'))
+              for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'HERDR_PROJECTS_BUILD', 'HERDR_PROJECTS_DOWNLOAD_URL'):
+                  environment.pop(key, None)
+              windows = os.name == 'nt'
+              command = (['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'scripts/install.ps1']
+                         if windows else ['sh', 'scripts/install.sh'])
+              installed = subprocess.run(command, env=environment, capture_output=True, text=True, check=True)
+              print(installed.stdout, end='')
+              print(installed.stderr, end='')
+              if 'building from source instead' in installed.stderr:
+                  raise RuntimeError('release installation used Cargo instead of the published binary')
+              binary = pathlib.Path('target/release', 'herdr-projects.exe' if windows else 'herdr-projects').resolve()
+              root = pathlib.Path(temporary, "project root O'Brien 世界")
+
+              def cli(*args):
+                  result = subprocess.run([str(binary), *args], env=environment, capture_output=True,
+                                          text=True, encoding='utf-8', check=True)
+                  print(result.stdout, end='')
+                  print(result.stderr, end='')
+                  return result.stdout
+
+              version = os.environ['TAG'].removeprefix('v')
+              reported = cli('--version').strip()
+              if reported != f'herdr-projects {version}' and not reported.startswith(f'herdr-projects {version}+'):
+                  raise RuntimeError(f'wrong installed release version: {reported}')
+              cli('--root', str(root), 'new', 'release-smoke', '--goal', 'Published release installation smoke')
+              if not pathlib.Path(root, 'release-smoke', 'PROJECT.md').is_file():
+                  raise RuntimeError('installed release did not create the project')
+              listing = cli('--root', str(root), 'list')
+              if not any(line.split('\t', 1)[0] == 'release-smoke' for line in listing.splitlines()):
+                  raise RuntimeError('installed release did not list its project')
+              context = cli('--root', str(root), 'context', 'release-smoke', '--peek')
+              if 'Published release installation smoke' not in context:
+                  raise RuntimeError('installed release did not load the project goal')
+          PY

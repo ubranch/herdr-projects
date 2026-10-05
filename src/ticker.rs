@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::coordinator;
 use crate::herdr::{Agent, Herdr, Pane};
-use crate::paths::Ctx;
+use crate::paths::{self, Ctx};
 use crate::project::{self, Project, Status};
 use crate::steps::{self, Memory, Transition};
 use crate::{inbox, thread};
@@ -399,8 +399,11 @@ pub fn tick(ctx: &Ctx, log: &Log, memory: &mut Memory) -> bool {
         // Only sessions this tick already listed: a paused project alone
         // costs no call.
         if let Some(Some((agents, _))) = sessions.lists.get(&socket).cloned() {
-            let herdr = Herdr::new(ctx.env.herdr_bin(), &socket, ctx.runner);
-            crate::grouping::apply(&herdr, &socket, &parts, &agents, &mut memory.grouping);
+            #[cfg(windows)]
+            let socket = socket.to_string_lossy();
+            let socket: &str = socket.as_ref();
+            let herdr = Herdr::new(ctx.env.herdr_bin(), socket, ctx.runner);
+            crate::grouping::apply(&herdr, socket, &parts, &agents, &mut memory.grouping);
         }
     }
     for (project, seen) in &reachable {
@@ -424,7 +427,10 @@ pub fn tick(ctx: &Ctx, log: &Log, memory: &mut Memory) -> bool {
 /// Returns whether a started thread still waits for its brief.
 pub fn brief_pass(ctx: &Ctx, log: &Log) -> bool {
     let mut waiting = false;
-    let mut lists: std::collections::BTreeMap<String, Option<Vec<Agent>>> = Default::default();
+    let mut lists: std::collections::BTreeMap<
+        paths::SocketKey,
+        std::collections::BTreeMap<String, Option<Vec<Agent>>>,
+    > = Default::default();
     for slug in project::list_slugs(&ctx.root) {
         let Ok(project) = Project::load(&ctx.root, &slug) else {
             continue;
@@ -455,10 +461,11 @@ pub fn brief_pass(ctx: &Ctx, log: &Log) -> bool {
             continue;
         };
         let herdr = Herdr::new(ctx.env.herdr_bin(), &record.socket, ctx.runner);
+        let lists = lists.entry(paths::socket_key(record.socket)).or_default();
         for t in &pending {
             let on = herdr.on_machine(&t.machine);
             let Some(agents) = lists
-                .entry(format!("{}\n{}", record.socket, t.machine))
+                .entry(t.machine.clone())
                 .or_insert_with(|| on.agent_list().ok())
             else {
                 continue;
@@ -483,13 +490,13 @@ type Lists = (Vec<Agent>, Vec<Pane>);
 /// Herdr's agent and pane lists, asked for at most once per session per tick
 /// and shared by every project in that session.
 pub struct Sessions {
-    lists: std::collections::BTreeMap<String, Option<Lists>>,
+    lists: std::collections::BTreeMap<paths::SocketKey, Option<Lists>>,
     /// The sockets a project without a live record is looked for in: the
     /// default session first, then every other project's recorded socket.
     candidates: Option<Vec<(String, String)>>,
     known: Vec<String>,
     /// Each session's projects, for the sidebar grouping.
-    parts: std::collections::BTreeMap<String, crate::grouping::Parts>,
+    parts: std::collections::BTreeMap<paths::SocketKey, crate::grouping::Parts>,
 }
 
 impl Sessions {
@@ -500,8 +507,8 @@ impl Sessions {
             .map(|record| record.socket)
             .filter(|socket| !socket.is_empty())
             .collect();
-        known.sort();
-        known.dedup();
+        known.sort_by(|left, right| paths::socket_ref(left).cmp(paths::socket_ref(right)));
+        known.dedup_by(|left, right| paths::socket_ref(left) == paths::socket_ref(right));
         Sessions {
             lists: Default::default(),
             candidates: None,
@@ -513,7 +520,7 @@ impl Sessions {
     /// `None` when the socket is gone or the session does not answer.
     fn get(&mut self, ctx: &Ctx, socket: &str) -> Option<&Lists> {
         self.lists
-            .entry(socket.to_string())
+            .entry(paths::socket_ref(socket).to_owned())
             .or_insert_with(|| {
                 if socket.is_empty() || !Path::new(socket).exists() {
                     return None;
@@ -538,7 +545,10 @@ impl Sessions {
             ));
         }
         for socket in &self.known {
-            if !found.iter().any(|(s, _)| s == socket) {
+            if !found
+                .iter()
+                .any(|(s, _)| paths::socket_ref(s) == paths::socket_ref(socket))
+            {
                 found.push((socket.clone(), String::new()));
             }
         }
@@ -626,7 +636,7 @@ fn mark_paused(ctx: &Ctx, project: &Project, sessions: &mut Sessions) {
     );
     sessions
         .parts
-        .entry(record.socket)
+        .entry(paths::socket_key(record.socket))
         .or_default()
         .insert(project.slug.clone(), part);
 }
@@ -1173,7 +1183,7 @@ fn tick_cheap(ctx: &Ctx, project: &Project, sessions: &mut Sessions) -> Result<O
     // The project's part of the sidebar grouping.
     sessions
         .parts
-        .entry(record.socket.clone())
+        .entry(paths::socket_key(record.socket.clone()))
         .or_default()
         .insert(
             slug.clone(),
@@ -1399,6 +1409,45 @@ mod tests {
     use super::*;
     use crate::paths::Env;
     use crate::runner::fake::{FakeRunner, fail, ok};
+
+    #[cfg(windows)]
+    #[test]
+    fn session_caches_and_grouping_share_socket_aliases_but_not_other_sessions() {
+        let world = crate::scenarios::World::new();
+        let alpha = world.project("alpha", "a.sock");
+        let beta = world.project("beta", "a.sock");
+        let gamma = world.project("gamma", "b.sock");
+        let native = crate::paths::canonicalize(&alpha.coordinator().unwrap().socket)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let mixed = native.replace('\\', "/");
+        alpha
+            .update_coordinator(|record| record.socket = native.clone())
+            .unwrap();
+        beta.update_coordinator(|record| record.socket = mixed.clone())
+            .unwrap();
+        let env = Env::for_test(world.home.path(), &[("HERDR_SOCKET_PATH", &mixed)]);
+        let mut ctx = world.ctx();
+        ctx.env = &env;
+        let mut sessions = Sessions::new(&ctx);
+        assert_eq!(sessions.known.len(), 2);
+        let candidates = sessions.candidates(&ctx);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].0, mixed);
+        assert!(sessions.get(&ctx, &native).is_some());
+        assert!(sessions.get(&ctx, &mixed).is_some());
+        assert_eq!(sessions.lists.len(), 1);
+        let other = gamma.coordinator().unwrap().socket;
+        assert!(sessions.get(&ctx, &other).is_some());
+        assert_eq!(sessions.lists.len(), 2);
+        mark_paused(&ctx, &alpha, &mut sessions);
+        mark_paused(&ctx, &beta, &mut sessions);
+        mark_paused(&ctx, &gamma, &mut sessions);
+        assert_eq!(sessions.parts.len(), 2);
+        assert_eq!(sessions.parts.get(Path::new(&native)).unwrap().len(), 2);
+        assert_eq!(sessions.parts.get(Path::new(&other)).unwrap().len(), 1);
+    }
 
     fn held(version: &str) -> LockState {
         LockState::Held(Info {

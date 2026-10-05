@@ -174,6 +174,7 @@ pub fn set_in(text: &str, key: &str, value: &str) -> Result<String> {
 /// `set <slug> <key> <value>`.
 pub fn set(ctx: &Ctx, slug: &str, key: &str, value: &str) -> Result<()> {
     let project = Project::load(&ctx.root, slug)?;
+    let _lock = project.lock()?;
     if let Some(role) = key.strip_suffix("_profile").or(key.strip_suffix("_agent")) {
         // A default must be a profile this project may use.
         let role = crate::profiles::Role::parse(role)?;
@@ -194,10 +195,7 @@ pub fn set(ctx: &Ctx, slug: &str, key: &str, value: &str) -> Result<()> {
     }
     let text = std::fs::read_to_string(project.project_md())?;
     let edited = set_in(&text, key, value)?;
-    {
-        let _lock = project.lock()?;
-        project::write_atomic(&project.project_md(), edited.as_bytes())?;
-    }
+    project::write_atomic(&project.project_md(), edited.as_bytes())?;
     if key == "name" {
         // The priming file names the project.
         project::write_priming(&project, &crate::coordinator::current_prefix(&ctx.root)?)?;
@@ -210,6 +208,7 @@ pub fn set(ctx: &Ctx, slug: &str, key: &str, value: &str) -> Result<()> {
 pub fn routine_toggle(ctx: &Ctx, slug: &str, name: &str, to: Option<bool>) -> Result<()> {
     let project = Project::load(&ctx.root, slug)?;
     project::validate_slug(name)?;
+    let _lock = project.lock()?;
     let path = project.dir().join("routines").join(format!("{name}.md"));
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("no routine `{name}` in `{slug}`"))?;

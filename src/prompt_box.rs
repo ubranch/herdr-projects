@@ -170,9 +170,18 @@ fn input_box(kind: &str, lines: &[Line]) -> Option<Vec<Line>> {
             .map(|(i, _)| i)
     };
     match kind {
-        // `❯` right under a rule, continued until the next rule.
-        "claude" => {
-            let at = last(&|i, l| trimmed_starts(l, "❯") && i > 0 && is_rule(&lines[i - 1]))?;
+        // `❯` right under a rule, continued until the next rule. OMP draws
+        // title/token/status text inside its upper rule.
+        "claude" | "omp" => {
+            let at = last(&|i, l| {
+                trimmed_starts(l, "❯")
+                    && i > 0
+                    && if kind == "omp" {
+                        trimmed_starts(&lines[i - 1], "──────────")
+                    } else {
+                        is_rule(&lines[i - 1])
+                    }
+            })?;
             let end = (at + 1..lines.len()).find(|&i| is_rule(&lines[i]))?;
             let mut rows = vec![after(&lines[at], '❯')?];
             rows.extend(lines[at + 1..end].iter().cloned());
@@ -272,7 +281,7 @@ pub fn box_text(kind: &str, screen: &str) -> Option<String> {
 pub fn knows(kind: &str) -> bool {
     matches!(
         kind,
-        "claude" | "codex" | "cursor" | "gemini" | "opencode" | "pi"
+        "claude" | "codex" | "cursor" | "gemini" | "opencode" | "pi" | "omp"
     )
 }
 
@@ -299,7 +308,9 @@ mod tests {
 
     #[test]
     fn every_supported_kind_tells_an_empty_box_from_a_draft() {
-        for kind in ["claude", "codex", "cursor", "gemini", "opencode", "pi"] {
+        for kind in [
+            "claude", "codex", "cursor", "gemini", "opencode", "pi", "omp",
+        ] {
             assert_eq!(
                 check(kind, &fixture(&format!("{kind}-empty"))),
                 Draft::Empty,

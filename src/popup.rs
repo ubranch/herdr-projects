@@ -4,6 +4,7 @@
 //! every key runs a CLI command of this binary, so the popup can do nothing
 //! the CLI cannot. It redraws every two seconds.
 
+use std::borrow::Cow;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -390,6 +391,7 @@ fn task_detail(task: &TaskRow) -> Mode {
         title: task.title.clone(),
         lines,
         files: Vec::new(),
+        doc_path: None,
         selected: 0,
         scroll: 0,
     }
@@ -846,7 +848,10 @@ fn profile_rows(ctx: &Ctx, rows: &mut Vec<Row>) {
 fn allowed_text(ctx: &Ctx, project: Option<&Project>, role: Role) -> String {
     let config = crate::profiles::load(&ctx.config_dir).unwrap_or_default();
     let safety = project
-        .and_then(|p| p.safety(&ctx.config_dir).ok())
+        .map_or_else(
+            || project::load_safety(&ctx.config_dir, Path::new("")),
+            |p| p.safety(&ctx.config_dir),
+        )
         .unwrap_or_default();
     match config.allowed(&safety, role) {
         None => "every profile".into(),
@@ -908,11 +913,12 @@ pub fn summary(root: &Path) -> String {
 
 enum Mode {
     List,
-    /// A scrollable text; `files` are selectable lines that open with ↵.
+    /// Scrollable text with an optional document path; `files` are selectable lines.
     Detail {
         title: String,
         lines: Vec<String>,
         files: Vec<PathBuf>,
+        doc_path: Option<PathBuf>,
         selected: usize,
         scroll: usize,
     },
@@ -1070,89 +1076,67 @@ impl<'a> Popup<'a> {
                 title,
                 lines,
                 files,
+                doc_path,
                 mut selected,
                 mut scroll,
-            } => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => Mode::List,
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if !files.is_empty() {
-                        selected = (selected + 1).min(files.len() - 1);
-                    } else {
-                        scroll = (scroll + 1).min(lines.len().saturating_sub(1));
+            } => {
+                if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                    Mode::List
+                } else {
+                    match key.code {
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if !files.is_empty() {
+                                selected = (selected + 1).min(files.len() - 1);
+                            } else {
+                                scroll = (scroll + 1).min(lines.len().saturating_sub(1));
+                            }
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            if !files.is_empty() {
+                                selected = selected.saturating_sub(1);
+                            } else {
+                                scroll = scroll.saturating_sub(1);
+                            }
+                        }
+                        KeyCode::PageDown => {
+                            scroll = scroll.saturating_add(20).min(lines.len().saturating_sub(1));
+                        }
+                        KeyCode::PageUp => scroll = scroll.saturating_sub(20),
+                        KeyCode::Home if files.is_empty() => scroll = 0,
+                        KeyCode::End if files.is_empty() => {
+                            scroll = lines.len().saturating_sub(1);
+                        }
+                        KeyCode::Enter => {
+                            if let Some(path) = files.get(selected).or(doc_path.as_ref()) {
+                                let mut args = vec![
+                                    "open-file".to_string(),
+                                    path.to_string_lossy().into_owned(),
+                                ];
+                                if !self.workspace.is_empty() {
+                                    args.extend(["--workspace".into(), self.workspace.clone()]);
+                                }
+                                if self.run(&args, None) && self.message.contains("new tab") {
+                                    self.quit = true;
+                                }
+                            }
+                        }
+                        KeyCode::Char('y') => {
+                            if let Some(path) = files.get(selected).or(doc_path.as_ref()) {
+                                self.message = copy(&path.to_string_lossy());
+                            }
+                        }
+                        _ => {}
                     }
                     Mode::Detail {
                         title,
                         lines,
                         files,
+                        doc_path,
                         selected,
                         scroll,
                     }
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if !files.is_empty() {
-                        selected = selected.saturating_sub(1);
-                    } else {
-                        scroll = scroll.saturating_sub(1);
-                    }
-                    Mode::Detail {
-                        title,
-                        lines,
-                        files,
-                        selected,
-                        scroll,
-                    }
-                }
-                KeyCode::PageDown => Mode::Detail {
-                    title,
-                    lines,
-                    files,
-                    selected,
-                    scroll: scroll + 20,
-                },
-                KeyCode::PageUp => Mode::Detail {
-                    title,
-                    lines,
-                    files,
-                    selected,
-                    scroll: scroll.saturating_sub(20),
-                },
-                KeyCode::Enter if !files.is_empty() => {
-                    let mut args = vec![
-                        "open-file".to_string(),
-                        files[selected].to_string_lossy().into_owned(),
-                    ];
-                    if !self.workspace.is_empty() {
-                        args.extend(["--workspace".into(), self.workspace.clone()]);
-                    }
-                    if self.run(&args, None) && self.message.contains("new tab") {
-                        self.quit = true;
-                    }
-                    Mode::Detail {
-                        title,
-                        lines,
-                        files,
-                        selected,
-                        scroll,
-                    }
-                }
-                KeyCode::Char('y') if !files.is_empty() => {
-                    self.message = copy(&files[selected].to_string_lossy());
-                    Mode::Detail {
-                        title,
-                        lines,
-                        files,
-                        selected,
-                        scroll,
-                    }
-                }
-                _ => Mode::Detail {
-                    title,
-                    lines,
-                    files,
-                    selected,
-                    scroll,
-                },
-            },
+            }
             Mode::Confirm {
                 question,
                 action,
@@ -1498,6 +1482,7 @@ impl<'a> Popup<'a> {
                     "No profile is allowed here. Allow one in the settings section.".into(),
                 ],
                 files: Vec::new(),
+                doc_path: None,
                 selected: 0,
                 scroll: 0,
             };
@@ -1516,7 +1501,10 @@ impl<'a> Popup<'a> {
         let project = Project::load(&self.ctx.root, slug).ok();
         let safety = project
             .as_ref()
-            .and_then(|p| p.safety(&self.ctx.config_dir).ok())
+            .map_or_else(
+                || project::load_safety(&self.ctx.config_dir, Path::new("")),
+                |p| p.safety(&self.ctx.config_dir),
+            )
             .unwrap_or_default();
         let allowed = config.allowed(&safety, role);
         let mut names: Vec<String> = config
@@ -1676,6 +1664,7 @@ impl<'a> Popup<'a> {
                             title: path.display().to_string(),
                             lines: text.lines().map(str::to_string).collect(),
                             files: Vec::new(),
+                            doc_path: Some(path),
                             selected: 0,
                             scroll: 0,
                         };
@@ -1892,6 +1881,7 @@ impl<'a> Popup<'a> {
                     title: id,
                     lines: body.lines().map(str::to_string).collect(),
                     files: Vec::new(),
+                    doc_path: None,
                     selected: 0,
                     scroll: 0,
                 }
@@ -1917,6 +1907,7 @@ impl<'a> Popup<'a> {
                     title: name,
                     lines: prompt.lines().map(str::to_string).collect(),
                     files: Vec::new(),
+                    doc_path: None,
                     selected: 0,
                     scroll: 0,
                 }
@@ -2222,6 +2213,7 @@ impl<'a> Popup<'a> {
                 files,
                 selected,
                 scroll,
+                ..
             } => {
                 queue!(
                     out,
@@ -2231,33 +2223,29 @@ impl<'a> Popup<'a> {
                     SetAttribute(Attribute::Reset)
                 )?;
                 let file_start = lines.len();
-                let all: Vec<String> = lines
-                    .iter()
-                    .cloned()
-                    .chain(files.iter().map(|f| format!("  {}", f.display())))
-                    .collect();
                 let start = if files.is_empty() {
                     *scroll
                 } else {
                     (file_start + selected).saturating_sub(body_height.saturating_sub(2))
                 };
-                for (i, line) in all
-                    .iter()
-                    .skip(start)
+                for (i, index) in (start..lines.len() + files.len())
                     .take(body_height.saturating_sub(1))
                     .enumerate()
                 {
-                    let index = start + i;
+                    let line = match lines.get(index) {
+                        Some(line) => Cow::Borrowed(line.as_str()),
+                        None => Cow::Owned(format!("  {}", files[index - file_start].display())),
+                    };
                     queue!(out, cursor::MoveTo(0, (body_top + 1 + i) as u16))?;
                     if !files.is_empty() && index == file_start + selected {
                         queue!(
                             out,
                             SetAttribute(Attribute::Reverse),
-                            Print(fit(line, width)),
+                            Print(fit(&line, width)),
                             SetAttribute(Attribute::Reset)
                         )?;
                     } else {
-                        queue!(out, Print(fit(line, width)))?;
+                        queue!(out, Print(fit(&line, width)))?;
                     }
                 }
             }
@@ -2536,6 +2524,9 @@ impl<'a> Popup<'a> {
             Mode::Detail { files, .. } if !files.is_empty() => {
                 "↑↓ file  ↵ open  y copy path  esc back".into()
             }
+            Mode::Detail {
+                doc_path: Some(_), ..
+            } => "↑↓ scroll  pgup/pgdn  home/end  ↵ open  y copy path  esc back".into(),
             Mode::Detail { .. } => "↑↓ scroll  esc back".into(),
             Mode::Confirm { question, .. } => question.clone(),
             Mode::Edit { label, buffer, .. } => format!("{label}: {buffer}▏  ↵ save  esc cancel"),
@@ -2610,6 +2601,7 @@ fn detail(root: &Path, row: &ThreadRow) -> Mode {
         title: format!("{} · {}", row.slug, t.id),
         lines,
         files,
+        doc_path: None,
         selected: 0,
         scroll: 0,
     }
@@ -3105,24 +3097,125 @@ mod tests {
             ]
         );
 
-        // The all-projects thread list: check `deep` only.
-        popup.selected = popup.rows.iter().position(|r| matches!(&r.kind, RowKind::Setting { slug, key, .. } if slug.is_empty() && key == "thread_profiles")).unwrap();
-        key(&mut popup, KeyCode::Enter);
-        let at = match &popup.mode {
-            Mode::Toggle { options, .. } => options.iter().position(|o| o.0 == "deep").unwrap(),
+        for (role, list_key, other_role) in [
+            (Role::Thread, "thread_profiles", Role::Coordinator),
+            (Role::Coordinator, "coordinator_profiles", Role::Thread),
+        ] {
+            // Check `deep` only, for each all-projects role.
+            popup.selected = popup.rows.iter().position(|r| matches!(&r.kind, RowKind::Setting { slug, key, .. } if slug.is_empty() && key == list_key)).unwrap();
+            key(&mut popup, KeyCode::Enter);
+            let at = match &popup.mode {
+                Mode::Toggle { options, .. } => options.iter().position(|o| o.0 == "deep").unwrap(),
+                _ => panic!("not a toggle"),
+            };
+            for _ in 0..at {
+                key(&mut popup, KeyCode::Down);
+            }
+            key(&mut popup, KeyCode::Char(' '));
+            key(&mut popup, KeyCode::Enter);
+            assert!(matches!(popup.mode, Mode::List), "{}", popup.message);
+            let global = project::load_safety(&ctx.config_dir, Path::new("")).unwrap();
+            assert_eq!(
+                config.allowed(&global, role),
+                Some(vec!["deep".to_string()])
+            );
+
+            // Reopen the saved list: the checks, not just the file, must survive.
+            key(&mut popup, KeyCode::Enter);
+            assert!(matches!(&popup.mode, Mode::Toggle { options, .. }
+                if !options[0].1
+                    && options.iter().filter(|o| o.1).map(|o| o.0.as_str()).collect::<Vec<_>>() == ["deep"]));
+            key(&mut popup, KeyCode::Esc);
+            assert!(
+                matches!(popup.allow_toggle("", other_role), Mode::Toggle { options, .. }
+                if options[0].1 && options.iter().skip(1).all(|o| !o.1))
+            );
+
+            // Restore every profile without the empty-list error.
+            key(&mut popup, KeyCode::Enter);
+            key(&mut popup, KeyCode::Char(' '));
+            key(&mut popup, KeyCode::Enter);
+            assert!(matches!(popup.mode, Mode::List), "{}", popup.message);
+            let global = project::load_safety(&ctx.config_dir, Path::new("")).unwrap();
+            assert_eq!(config.allowed(&global, role), None);
+            key(&mut popup, KeyCode::Enter);
+            assert!(matches!(&popup.mode, Mode::Toggle { options, .. }
+                if options[0].1 && options.iter().skip(1).all(|o| !o.1)));
+            key(&mut popup, KeyCode::Esc);
+        }
+    }
+
+    #[test]
+    fn profile_permission_checks_follow_global_roles_and_project_overrides() {
+        let world = crate::scenarios::World::new();
+        world.project("alpha", "a.sock");
+        let beta = world.project("beta", "a.sock");
+        let ctx = world.ctx();
+        std::fs::create_dir_all(&ctx.config_dir).unwrap();
+        std::fs::write(
+            ctx.config_dir.join("config.toml"),
+            "[safety.default]\nthread_profiles = [\"claude\"]\ncoordinator_profiles = [\"codex\"]\n",
+        )
+        .unwrap();
+        let mut popup = Popup::new(&ctx, None, String::new());
+        let checked = |mode: Mode| match mode {
+            Mode::Toggle { options, .. } => (
+                options[0].1,
+                options
+                    .into_iter()
+                    .skip(1)
+                    .filter(|o| o.1)
+                    .map(|o| o.0)
+                    .collect::<Vec<_>>(),
+            ),
             _ => panic!("not a toggle"),
         };
-        for _ in 0..at {
-            key(&mut popup, KeyCode::Down);
+        for slug in ["", "alpha", "beta"] {
+            assert_eq!(
+                checked(popup.allow_toggle(slug, Role::Thread)),
+                (false, vec!["claude".into()])
+            );
+            assert_eq!(
+                checked(popup.allow_toggle(slug, Role::Coordinator)),
+                (false, vec!["codex".into()])
+            );
         }
-        key(&mut popup, KeyCode::Char(' '));
-        key(&mut popup, KeyCode::Enter);
+
+        crate::profiles::apply(
+            &ctx.config_dir,
+            &crate::profiles::Change::Allow {
+                role: Role::Thread,
+                project: Some(beta.canonical_dir()),
+                names: Some(vec!["codex".into()]),
+            },
+        )
+        .unwrap();
+        crate::profiles::apply(
+            &ctx.config_dir,
+            &crate::profiles::Change::Allow {
+                role: Role::Coordinator,
+                project: None,
+                names: Some(Vec::new()),
+            },
+        )
+        .unwrap();
+        popup.reload();
         assert_eq!(
-            project::load_safety(&ctx.config_dir, Path::new(""))
-                .unwrap()
-                .thread_profiles,
-            Some(vec!["deep".to_string()])
+            checked(popup.allow_toggle("beta", Role::Thread)),
+            (false, vec!["codex".into()])
         );
+        for slug in ["", "alpha"] {
+            assert_eq!(
+                checked(popup.allow_toggle(slug, Role::Thread)),
+                (false, vec!["claude".into()])
+            );
+        }
+        for slug in ["", "alpha", "beta"] {
+            assert_eq!(
+                checked(popup.allow_toggle(slug, Role::Coordinator)),
+                (false, Vec::new())
+            );
+        }
     }
 
     #[test]

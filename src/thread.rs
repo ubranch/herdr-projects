@@ -202,7 +202,18 @@ fn write_record(project: &Project, thread: &Thread) -> Result<()> {
 /// Read-modify-write under the project lock: re-reads the record, lets `change`
 /// touch only the fields its step owns, writes.
 pub fn update(project: &Project, id: &str, change: impl FnOnce(&mut Thread)) -> Result<Thread> {
-    let _lock = project.lock()?;
+    let lock = project.lock()?;
+    update_locked(project, id, &lock, change)
+}
+
+/// The caller already holds this project's lock across its cleanup effect.
+pub(crate) fn update_locked(
+    project: &Project,
+    id: &str,
+    lock: &project::ProjectLock,
+    change: impl FnOnce(&mut Thread),
+) -> Result<Thread> {
+    ensure!(lock.guards(project), "the lock belongs to another project");
     let mut thread = load(project, id)?;
     change(&mut thread);
     thread.updated = project::now();

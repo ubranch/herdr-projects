@@ -209,7 +209,10 @@ pub struct OpenOptions {
 fn here_pane(ctx: &Ctx, options: &OpenOptions, socket: &str, agents: &[Agent]) -> Option<String> {
     if !options.here
         || ctx.env.var("HERDR_PLUGIN_STATE_DIR").is_some()
-        || ctx.env.var("HERDR_SOCKET_PATH") != Some(socket)
+        || !ctx
+            .env
+            .var("HERDR_SOCKET_PATH")
+            .is_some_and(|current| paths::socket_ref(current) == paths::socket_ref(socket))
     {
         return None;
     }
@@ -252,7 +255,7 @@ pub fn open(ctx: &Ctx, slug: &str, options: &OpenOptions) -> Result<()> {
     let mut previous = project.coordinator();
     if let Some(record) = &previous
         && !record.socket.is_empty()
-        && record.socket != socket
+        && paths::socket_ref(&record.socket) != paths::socket_ref(&socket)
     {
         if Path::new(&record.socket).exists() {
             bail!(

@@ -364,9 +364,28 @@ pub struct Project {
 
 /// Held while reading and rewriting anything under `threads/`, `inbox/` or
 /// `.state/`. Its persistent token is under the root, never inside a project
-/// folder that can move. Never held across a herdr, git, gh, ssh or scp call.
+/// folder that can move. External calls stay outside this lock except bounded
+/// destructive Git operations and their owned-workspace preclose: cleanup must
+/// keep its current permission and record update indivisible. No prompts,
+/// profile lookup, launches or project-locking callbacks may run while held.
 pub struct ProjectLock {
     _file: File,
+    path: PathBuf,
+}
+
+impl ProjectLock {
+    pub(crate) fn guards(&self, project: &Project) -> bool {
+        self.path.parent() == Some(project.root.as_path())
+            && self
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.strip_prefix(".project-")
+                        .and_then(|s| s.strip_suffix(".lock"))
+                        == Some(project.slug.as_str())
+                })
+    }
 }
 
 /// Reserves a slug even before its project exists. Tokens are never removed:
@@ -382,7 +401,7 @@ fn lock_slug(root: &Path, slug: &str) -> Result<ProjectLock> {
         .open(&path)
         .with_context(|| format!("could not lock project `{slug}` ({})", path.display()))?;
     file.lock()?;
-    Ok(ProjectLock { _file: file })
+    Ok(ProjectLock { _file: file, path })
 }
 
 impl Project {

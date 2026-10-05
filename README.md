@@ -50,13 +50,15 @@ Agents report their own progress, so a thread that asked you something shows `ne
 
 <table>
 <tr>
-<td align="center" valign="top" width="33%"><h3>1️⃣</h3><b>Install and configure</b><br /><sub>On macOS/Linux, run <code>herdr plugin install eliasstravik/herdr-projects</code>. On Windows, use the <a href="docs/getting-started.md#2-install-the-plugin">fork-main source install</a>. Then run <code>herdr-projects configure</code> once for the sidebar rows, the popup key, the progress hooks and the <code>/autoproject</code> skill.</sub></td>
+<td align="center" valign="top" width="33%"><h3>1️⃣</h3><b>Install and configure</b><br /><sub>On macOS, Linux or Windows x64, run <code>herdr plugin install ubranch/herdr-projects</code>. Then run <code>herdr-projects configure</code> once for the sidebar rows, the popup key, the progress hooks and the <code>/autoproject</code> skill.</sub></td>
 <td align="center" valign="top" width="33%"><h3>2️⃣</h3><b>Create and open a project</b><br /><sub>Run <code>herdr plugin action invoke new --plugin herdr-projects</code>, or <code>herdr-projects new "Billing" --repo ~/dev/app</code> then <code>herdr-projects open billing</code>. A coordinator agent starts in the project's folder and primes itself from its <code>AGENTS.md</code>.</sub></td>
 <td align="center" valign="top" width="33%"><h3>3️⃣</h3><b>Tell it what you want</b><br /><sub>Describe the work in the coordinator's pane. It suggests threads, you say go ahead, and the sidebar shows each thread's state as it works.</sub></td>
 </tr>
 </table>
 
-Native Windows x64 currently needs PowerShell 7 and a Rust MSVC source build from this checkout. The [ubranch fork](https://github.com/ubranch/herdr-projects) has no published Windows release assets. Use the [Windows installation instructions](docs/getting-started.md#2-install-the-plugin), not the upstream install command.
+The [ubranch fork releases](https://github.com/ubranch/herdr-projects/releases) support prebuilt binaries for macOS (Apple Silicon and Intel), Linux and native Windows x64, building on [eliasstravik/herdr-projects](https://github.com/eliasstravik/herdr-projects). Installers verify downloads against `SHA256SUMS`. A Git checkout whose `HEAD` is not at its version's published release tag, or has tracked changes, uses the existing `cargo build --release --locked` source fallback; missing or unverifiable assets do too. See the [installation instructions](docs/getting-started.md#2-install-the-plugin).
+
+On Windows, remote directory/library transfer requires matching MSYS2 `rsync` and OpenSSH, not MSYS2 `rsync` paired with Win32 OpenSSH alone. See [Threads on other machines](docs/operations.md#threads-on-other-machines) for the runtime requirements and verification boundary; no test-only compatibility launcher is shipped.
 
 ## Get everything included, free
 
@@ -73,7 +75,7 @@ Native Windows x64 currently needs PowerShell 7 and a Rust MSVC source build fro
 
 **Windows fork policy:** preserve the port on `ubranch/herdr-projects`'s stable `main`, and merge upstream `main` only after the exact candidate passes both Windows/Linux native gates: `cargo +stable fmt --all -- --check` and `cargo +stable clippy --locked --all-targets --target <native-target> -- -D warnings`, followed by locked tests/builds and real CLI smoke checks. The **Upstream sync** workflow is configured for a best-effort 15-minute schedule and manual dispatch. Open branches and PRs are **track only**: no merging, testing or installing unmerged code, including upstream Windows PR #100. Merged PRs become ordinary upstream `main` updates. Conflicts or failing gates stop promotion, never force/reset the port. See [fork maintenance and activation](docs/operations.md#windows-fork-maintenance); required gates are not a claim that a run has passed.
 
-The Windows port and sync workflow are published on `ubranch/herdr-projects`'s `main`. From a clean fork `main` checkout whose `origin` is `ubranch/herdr-projects`, run `git pull --ff-only origin main` and deliberately rebuild with `scripts/install.ps1`. The Rust binary implements the plugin; PowerShell scripts only build, install and link it. Cloud sync does not install binaries or overwrite local development work; Windows release assets remain unpublished. Do not switch to upstream `main` to satisfy `update`. See [Updating](docs/getting-started.md#updating); stop/restart the ticker only when deliberately updating the installed plugin, not during source checks, and leave existing Herdr sessions running.
+The Windows port and sync workflow are published on `ubranch/herdr-projects`'s `main`. From a clean fork `main` checkout whose `origin` is `ubranch/herdr-projects`, run `git pull --ff-only origin main` and deliberately reinstall with `scripts/install.ps1`. At the matching published release commit, the installer downloads the verified Windows asset; between releases, it builds that checkout with `cargo build --release --locked`. The Rust binary implements the plugin; PowerShell scripts only download/build, install and link it. Cloud sync does not install binaries or overwrite local development work. Do not switch to upstream `main` to satisfy `update`. See [Updating](docs/getting-started.md#updating); stop/restart the ticker only when deliberately updating the installed plugin, not during source checks, and leave existing Herdr sessions running.
 
 Before upgrading an existing Unix installation to this port, stop its ticker with the old binary: ticker metadata now lives in `.ticker.info`, not `.ticker.lock`.
 
@@ -81,7 +83,7 @@ Before upgrading an existing Unix installation to this port, stop its ticker wit
 
 ```bash
 herdr-projects ticker stop
-herdr plugin install eliasstravik/herdr-projects
+herdr plugin install ubranch/herdr-projects
 herdr-projects doctor --fix
 herdr-projects ticker start
 ```
@@ -101,7 +103,7 @@ herdr-projects update --check   # only print the installed and the newest versio
 
 ### Do I need to know how to code?
 
-You need to be comfortable in a terminal. A project is a plain folder of Markdown and TOML files, but you never have to edit them: everything changes by asking the coordinator or from the popup. You'll need Git and an agent CLI Herdr can start, such as Claude Code or oh-my-pi. macOS/Linux need Herdr 0.9.1 or newer and normally download a prebuilt binary. Native Windows x64 has been exercised with Herdr 0.9.3 and oh-my-pi 18.5.1; it currently needs PowerShell 7, Rust/Cargo 1.89+ with the MSVC toolchain, and Visual Studio C++ Build Tools. The [getting-started guide](docs/getting-started.md) covers installation; [Herdr notes](docs/herdr-notes.md#native-windows-port) distinguish exercised native scenarios from remaining acceptance checks.
+You need to be comfortable in a terminal. A project is a plain folder of Markdown and TOML files, but you never have to edit them: everything changes by asking the coordinator or from the popup. You'll need Git and an agent CLI Herdr can start, such as Claude Code or oh-my-pi. macOS/Linux need Herdr 0.9.1 or newer and normally download a prebuilt binary. Native Windows x64 has been exercised with Herdr 0.9.3 and oh-my-pi 18.5.1 and needs PowerShell 7; prebuilt releases do not require Rust or Visual Studio C++ Build Tools. The source fallback needs Rust/Cargo 1.89+ and a C compiler (on Windows, the MSVC toolchain and Visual Studio C++ Build Tools). The [getting-started guide](docs/getting-started.md) covers installation; [Herdr notes](docs/herdr-notes.md#native-windows-port) distinguish exercised native scenarios from remaining acceptance checks.
 
 ### How do I check that Herdr Projects is running?
 
