@@ -174,7 +174,7 @@ jobs:
       - name: Install the published binary and exercise the CLI
         shell: bash
         run: |
-          python - <<'PY'
+          python -X utf8 - <<'PY'
           import os
           import pathlib
           import subprocess

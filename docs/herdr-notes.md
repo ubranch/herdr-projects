@@ -228,3 +228,9 @@ The Mac run exposed eight Unix-only no-op socket-key conversions and CRLF in two
 The actual attached Windows ConPTY memory viewer also displayed an owned 240-line document. Enter, Down/Up, PageDown/PageUp, Home/End and repeated end-clamping matched eight observed viewport first lines. Native `y` copied the exact document path without a newline and restored all four previously saved clipboard formats. This proves native terminal cells and interaction, not a desktop pixel screenshot.
 
 The existing Windows installer then performed one staged optimized source build and installed `0.2.34+da073ca.1791214154`. Both mapped previous images were retained rather than overwritten. The installed CLI ran successfully, and a version-aware restart replaced only the owned Main ticker with that same version. The Beta ticker and remote worker were not restarted; the tested saved Mac SSH profile had already been removed at the user's request.
+
+### Published release checks
+
+The first fork release, `v0.2.35`, built and published all five binaries plus `SHA256SUMS` in [run 37361099552](https://github.com/ubranch/herdr-projects/actions/runs/37361099552). Native formatting, strict Clippy and tests passed on Windows, macOS ARM, and both Linux runners; Intel macOS was cross-built. The actual macOS release installer and CLI smoke passed. Windows also downloaded and installed the published binary and created the Unicode-path project, but Python's CP1252 stdout failed while printing its output. This was a CI logger failure, not a failed binary installation.
+
+The `v0.2.36` patch runs the release and upstream-sync CLI smoke loggers with `python -X utf8`, preserving the Unicode test path rather than suppressing encoding errors. The published `v0.2.35` tag remains unchanged. Verification of the patch release is recorded by its own Actions run and release assets.

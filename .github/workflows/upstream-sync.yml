@@ -223,7 +223,7 @@ jobs:
           CLI_SUFFIX: ${{ matrix.suffix }}
         shell: bash
         run: |
-          python - <<'PY'
+          python -X utf8 - <<'PY'
           import os
           import pathlib
           import subprocess
